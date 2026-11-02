@@ -1,25 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit, SessionUsage } from 'claude-code'
 
-import type { LastRequest, SessionInfo, UsageWindow, WarmState } from '../types'
+import type { LastRequest, SeenWindows, SessionInfo, UsageWindow, WarmState } from '../types'
 
 // Die Form-Kennung sorgt dafür, dass Werte einer älteren Version nach dem
 // Aktualisieren als leer gelesen werden statt als falsch geformte Daten
 const last = atom({ plugin: 'kontext-cache-band', key: 'last' } as const, null, { shape: 'v3' })
-const info = atom({ plugin: 'kontext-cache-band', key: 'info' } as const, null, { shape: 'v3' })
+const info = atom({ plugin: 'kontext-cache-band', key: 'info' } as const, null, { shape: 'v4' })
 const ttlHint = atom({ plugin: 'kontext-cache-band', key: 'ttlHint' } as const, null, { shape: 'v3' })
 const warm = atom({ plugin: 'kontext-cache-band', key: 'warm' } as const, null, { shape: 'v1' })
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
-
-// Token kurz und mit Dezimalkomma: 840, 8,4k, 92k, 1M, 1,5M
-function formatTokens(n: number): string {
-  if (n < 1000) return String(Math.round(n))
-  if (n < 10_000) return (n / 1000).toFixed(1).replace(/\.0$/, '').replace('.', ',') + 'k'
-  if (n < 999_500) return Math.round(n / 1000) + 'k'
-  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '').replace('.', ',') + 'M'
-}
 
 // Restzeit als m:ss (eine Stunde ist 60:00, damit die Spalte schmal bleibt),
 // aufgerundet, damit nie „0:00“ bei noch warmem Cache steht
@@ -30,21 +22,11 @@ function formatDuration(ms: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-// Zeit seit Ablauf, in ganzen Minuten oder Stunden, passend zum Neuzeichnen einmal pro Minute
-function formatMinutes(ms: number): string {
-  const minutes = Math.floor(ms / MINUTE)
-  if (minutes < 1) return 'unter 1 min'
-  if (minutes < 60) return `${minutes} min`
-  const h = Math.floor(minutes / 60)
-  const m = minutes % 60
-  return m === 0 ? `${h} h` : `${h} h ${m} min`
-}
+// Ein Balkenabschnitt: zusammenhängende Einheiten derselben Art
+type Run = { kind: Unit; text: string }
 
-// Ein Balkenabschnitt: zusammenhängende Zellen derselben Art
-type Run = { kind: string; text: string }
-
-// Fasst Zellen gleicher Art zu Abschnitten zusammen, damit jeder eine Farbe bekommt
-function toRuns(cells: readonly string[], glyph: (kind: string) => string): Run[] {
+// Fasst Einheiten gleicher Art zu Abschnitten zusammen, damit jeder eine Farbe bekommt
+function toRuns(cells: readonly Unit[], glyph: (kind: Unit) => string): Run[] {
   const runs: Run[] = []
   for (const kind of cells) {
     const lastRun = runs[runs.length - 1]
@@ -54,30 +36,33 @@ function toRuns(cells: readonly string[], glyph: (kind: string) => string): Run[
   return runs
 }
 
-// Anzahl Zellen für einen Anteil von 0 bis 100; dieselbe Rundung für Füllung und Marke
+// Anzahl Einheiten für einen Anteil von 0 bis 100
 const cellCount = (percent: number, width: number) =>
   Math.max(0, Math.min(width, Math.round((percent / 100) * width)))
 
-// Zellen aus aufeinanderfolgenden Anteilen, der Rest wird mit 'empty' aufgefüllt
-function cellsFrom(width: number, parts: ReadonlyArray<[string, number]>): string[] {
-  const cells: string[] = []
-  let sum = 0
-  for (const [kind, percent] of parts) {
-    sum += percent
-    const until = cellCount(sum, width)
-    while (cells.length < until) cells.push(kind)
+// Jeder Balken hat 10 Einheiten zu je 10 %: gefüllt, leer, oder die leere Einheit,
+// in der eine Schwelle liegt (Auto-Compact)
+type Unit = 'fill' | 'empty' | 'mark'
+const UNITS = 10
+
+function units(percent: number | undefined, markAt?: number): Unit[] {
+  const filled = percent === undefined ? 0 : cellCount(percent, UNITS)
+  const cells: Unit[] = Array.from({ length: UNITS }, (_, i) => (i < filled ? 'fill' : 'empty'))
+  if (markAt !== undefined) {
+    // Die Einheit, in deren Zehntel die Schwelle fällt: 84 % liegt in der neunten
+    const i = Math.max(0, Math.min(UNITS - 1, Math.floor((markAt / 100) * UNITS)))
+    if (cells[i] === 'empty') cells[i] = 'mark'
   }
-  while (cells.length < width) cells.push('empty')
   return cells
 }
 
-const glyphs = (kind: string) => (kind === 'empty' ? '░' : kind === 'mark' ? '┃' : '█')
+// Terminal: die Lücke zwischen den Einheiten steckt im Zeichen
+const glyphs = (kind: Unit) => (kind === 'fill' ? '▰' : '▱')
 
-// Prozent rechtsbündig in fester Breite, damit beide Zeilen fluchten; ≈ für Schätzungen
+// Prozent in fester Breite, damit Werte nicht springen; ≈ für Schätzungen
 const pct = (n: number, isEstimate = false) => `${isEstimate ? '≈' : ''}${Math.round(n)} %`.padStart(5)
 
-// Spaltenbreiten in Zellen, damit beide Zeilen übereinander fluchten
-const LABEL = 9
+// Breite der Wertspalte in Zellen: reicht für „≈58:30“ und „100 %“
 const PCT = 6
 
 // Farben der Balken. Theme-Schlüssel für Text, feste Werte für die Vektorgrafik,
@@ -90,31 +75,27 @@ const TONE: Record<Tone, string> = {
   subtle: '#8A8A8A',
 }
 
-// Balken der Desktop-App: abgerundete Spur, Abschnitte darin, optional eine Marke
-const BAR_H = 12
-function svgBar(
-  width: number,
-  segments: ReadonlyArray<{ from: number; to: number; color: string }>,
-  markAt?: number,
-): string {
-  const y = 3
-  const barH = 6
-  const r = barH / 2
-  const x = (p: number) => Math.round((Math.max(0, Math.min(100, p)) / 100) * width * 10) / 10
-  const parts = segments
-    .filter(s => s.to > s.from)
-    .map(s => `<rect x="${x(s.from)}" y="${y}" width="${Math.max(0, x(s.to) - x(s.from))}" height="${barH}" fill="${s.color}"/>`)
+// Balken der Desktop-App: 10 kleine abgerundete Rechtecke mit Lücke. Leere Einheiten
+// grau, oder in emptyTone (kalter Cache rot); die Schwellen-Einheit gelb
+const UNIT_W = 8
+const UNIT_GAP = 2
+const UNIT_H = 8
+const BAR_W = UNITS * UNIT_W + (UNITS - 1) * UNIT_GAP
+function svgUnits(cells: readonly Unit[], tone: Tone, emptyTone?: Tone): string {
+  const rects = cells
+    .map((kind, i) => {
+      const fill =
+        kind === 'fill'
+          ? `fill="${TONE[tone]}"`
+          : kind === 'mark'
+            ? `fill="${TONE.warning}" fill-opacity="0.6"`
+            : emptyTone === undefined
+              ? 'fill="#808080" fill-opacity="0.25"'
+              : `fill="${TONE[emptyTone]}" fill-opacity="0.45"`
+      return `<rect x="${i * (UNIT_W + UNIT_GAP)}" y="0" width="${UNIT_W}" height="${UNIT_H}" rx="2" ${fill}/>`
+    })
     .join('')
-  const mark =
-    markAt === undefined
-      ? ''
-      : `<rect x="${Math.max(0, Math.min(width - 2, x(markAt) - 1))}" y="0" width="2" height="${BAR_H}" rx="1" fill="${TONE.warning}"/>`
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${BAR_H}" viewBox="0 0 ${width} ${BAR_H}">` +
-    `<defs><clipPath id="t"><rect x="0" y="${y}" width="${width}" height="${barH}" rx="${r}"/></clipPath></defs>` +
-    `<rect x="0" y="${y}" width="${width}" height="${barH}" rx="${r}" fill="#808080" fill-opacity="0.25"/>` +
-    `<g clip-path="url(#t)">${parts}</g>${mark}</svg>`
-  )
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_W}" height="${UNIT_H}" viewBox="0 0 ${BAR_W} ${UNIT_H}">${rects}</svg>`
 }
 
 // Abrechnungsart aus den Nutzungsfenstern: nur das 5-Stunden- und das Wochenfenster
@@ -204,10 +185,56 @@ async function storeInfo($: EngineInterface, usage: SessionUsage) {
     autoCompactAt: breakdown?.autoCompactThreshold,
     autoCompactOverride: config.autoCompactOverride,
     isCachingOff: config.isCachingOff,
-    fiveHour: windowFrom(usage.rateLimits, 'five_hour'),
-    sevenDay: windowFrom(usage.rateLimits, 'seven_day'),
+    ...(await rememberWindows($, {
+      fiveHour: windowFrom(usage.rateLimits, 'five_hour'),
+      sevenDay: windowFrom(usage.rateLimits, 'seven_day'),
+    })),
   }
   await update($, info, () => next)
+}
+
+// Nutzungsfenster über Sitzungen merken: Nicht jeder Plan hat jedes Fenster (der große
+// Max-Plan hat kein 5-Stunden-Limit), und vor der ersten Antwort einer Sitzung oder kurz
+// nach einer Zurücksetzung meldet Claude Code ein vorhandenes Fenster nicht. Ein Fenster
+// bekommt einen Balken, solange es in den letzten 7 Tagen gemeldet wurde; fehlt es gerade,
+// gilt der gemerkte Stand (nach dessen Zurücksetzung 0 %, siehe windowView).
+const SEEN_KEY = 'seenWindows.v1'
+const SEEN_FOR = 7 * 24 * HOUR
+type Windows = { fiveHour?: UsageWindow; sevenDay?: UsageWindow }
+
+async function rememberWindows($: EngineInterface, reported: Windows): Promise<Windows> {
+  const now = await $.clock.now()
+  let seen: SeenWindows
+  try {
+    const stored = ((await $.store.get(SEEN_KEY)) ?? {}) as SeenWindows
+    const changed: SeenWindows = {}
+    for (const key of ['fiveHour', 'sevenDay'] as const) {
+      const w = reported[key]
+      const old = stored[key]
+      // Nur schreiben, wenn sich etwas geändert hat oder die Meldung über eine Stunde alt ist
+      if (w === undefined) continue
+      if (old !== undefined && old.percent === w.percent && old.resetsAt === w.resetsAt && now - old.at < HOUR) continue
+      changed[key] = w.resetsAt === undefined ? { at: now, percent: w.percent } : { at: now, percent: w.percent, resetsAt: w.resetsAt }
+    }
+    seen = { ...stored, ...changed }
+    if (Object.keys(changed).length > 0) await $.store.set(SEEN_KEY, seen)
+  } catch {
+    // Ohne Speicher gelten nur die gerade gemeldeten Fenster
+    return reported
+  }
+  const result: Windows = {}
+  for (const key of ['fiveHour', 'sevenDay'] as const) {
+    const w = reported[key]
+    const old = seen[key]
+    if (w !== undefined) result[key] = w
+    else if (old !== undefined && now - old.at <= SEEN_FOR) {
+      result[key] =
+        old.resetsAt === undefined
+          ? { percent: old.percent, isRemembered: true }
+          : { percent: old.percent, resetsAt: old.resetsAt, isRemembered: true }
+    }
+  }
+  return result
 }
 
 // Ein Nutzungsfenster aus den gemeldeten; ein unlesbarer Zeitpunkt fällt weg
@@ -218,51 +245,24 @@ function windowFrom(rateLimits: readonly SessionRateLimit[], kind: string): Usag
   return { percent: limit.percentUsed, resetsAt: Number.isNaN(resetsAt) ? undefined : resetsAt }
 }
 
-// Die Nutzungsfenster des Abos: Bezeichnung im Tooltip und ab welcher Restzeit
-// die Zurücksetzung dasteht. Das erste ist der innere Ring, das zweite der äußere.
+// Die Nutzungsfenster des Abos als Balken: Label und Name für die Bildbeschreibung
 const WINDOWS = [
-  { key: 'fiveHour', label: '5-Stunden-Limit', showWithin: HOUR },
-  { key: 'sevenDay', label: 'Wochenlimit', showWithin: 12 * HOUR },
+  { key: 'fiveHour', label: '5 Std', name: '5-Stunden-Limit' },
+  { key: 'sevenDay', label: '7 Tage', name: '7-Tage-Limit' },
 ] as const
 
-type WindowView = { percent: number; tone: Tone; text: string } | { percent: undefined; tone: Tone; text: string }
-
-// Was die Ringe zu einem Fenster zeigen. Ist die gemeldete Zurücksetzung vorbei, gilt
+// Stand eines Fensters für den Balken. Ist die gemeldete Zurücksetzung vorbei, gilt
 // der alte Stand nicht mehr: 0 %, bis die nächste Anfrage den neuen bringt.
-function windowView(window: UsageWindow | undefined, label: string, showWithin: number, now: number): WindowView {
-  if (window === undefined) return { percent: undefined, tone: 'subtle', text: `${label}: nicht gemeldet` }
-  const left = window.resetsAt === undefined ? undefined : window.resetsAt - now
-  const isReset = left !== undefined && left <= 0
+function windowView(window: UsageWindow, now: number): { percent: number; tone: Tone } {
+  const isReset = window.resetsAt !== undefined && window.resetsAt <= now
   const percent = isReset ? 0 : window.percent
-  const tone: Tone = percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success'
-  const due = left !== undefined && !isReset && left <= showWithin ? `, neu in ${formatSpan(left)}` : ''
-  return { percent, tone, text: `${label}: ${pct(percent).trim()}${due}` }
+  return { percent, tone: percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success' }
 }
 
-// Zwei Ringe ineinander, innen das 5-Stunden-, außen das Wochenfenster, ohne Zahlen.
-// Der Tooltip (title) nennt die Werte; er braucht eine interaktiv gezeichnete Grafik.
-const RINGS = 36
-function svgRings(inner: WindowView, outer: WindowView, title: string): string {
-  const stroke = 4
-  const c = RINGS / 2
-  const ring = (r: number, view: WindowView) => {
-    const length = 2 * Math.PI * r
-    const used = view.percent === undefined ? 0 : Math.round((Math.max(0, Math.min(100, view.percent)) / 100) * length * 10) / 10
-    const track = `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="#808080" stroke-opacity="0.25" stroke-width="${stroke}"/>`
-    const arc =
-      used <= 0
-        ? ''
-        : `<circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${TONE[view.tone]}" stroke-width="${stroke}" ` +
-          `stroke-dasharray="${used} ${length}" transform="rotate(-90 ${c} ${c})"/>`
-    return track + arc
-  }
-  const outerR = (RINGS - stroke) / 2
-  const innerR = outerR - stroke - 2
-  const escaped = title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${RINGS}" height="${RINGS}" viewBox="0 0 ${RINGS} ${RINGS}">` +
-    `<title>${escaped}</title>${ring(outerR, outer)}${ring(innerR, inner)}</svg>`
-  )
+// Restzeit des Warmhalte-Fensters als h:mm, aufgerundet auf die Minute
+function formatClock(ms: number): string {
+  const minutes = Math.max(0, Math.ceil(ms / MINUTE))
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`
 }
 
 async function refresh($: EngineInterface) {
@@ -307,7 +307,22 @@ async function runLimitsCommand($: EngineInterface): Promise<string> {
     lines.push(
       w === undefined
         ? `  ${name}: nichts`
-        : `  ${name}: ${w.percent} %, Zurücksetzung ${w.resetsAt === undefined ? 'nicht gemeldet' : new Date(w.resetsAt).toISOString()}`,
+        : `  ${name}: ${w.percent} %, Zurücksetzung ${w.resetsAt === undefined ? 'nicht gemeldet' : new Date(w.resetsAt).toISOString()}${w.isRemembered === true ? ' (gemerkt)' : ''}`,
+    )
+  }
+  lines.push('', `Über Sitzungen gemerkt (${SEEN_KEY}, Balken bis 7 Tage nach der letzten Meldung):`)
+  let seen: SeenWindows | undefined
+  try {
+    seen = (await $.store.get(SEEN_KEY)) as SeenWindows | undefined
+  } catch {
+    lines.push('  Speicher nicht lesbar')
+  }
+  for (const name of ['fiveHour', 'sevenDay'] as const) {
+    const w = seen?.[name]
+    lines.push(
+      w === undefined
+        ? `  ${name}: nichts`
+        : `  ${name}: ${w.percent} %, zuletzt gemeldet ${new Date(w.at).toISOString()}, Zurücksetzung ${w.resetsAt === undefined ? 'nicht gemeldet' : new Date(w.resetsAt).toISOString()}`,
     )
   }
   return lines.join('\n')
@@ -468,14 +483,14 @@ export const register: Register = on => {
     }
 
     // Solange der Cache warm ist, jede Sekunde neu zeichnen (Countdown),
-    // danach nur noch einmal pro Minute (Anzeige „kalt seit … min“)
-    let drawnMinute = -1
+    // danach einmal beim Ablauf (leerer Balken, rote Einheiten)
+    let wasWarm = false
     let drawnClockMinute = -1
     $.clock.every(1000, () => {
       void warmTick($).catch(() => undefined)
       void (async () => {
         try {
-          // Die Zeitangaben der Nutzungsfenster in der Fußzeile gehen nach der Uhr
+          // Die Nutzungsfenster schalten nach ihrer Zurücksetzung auf 0 %: einmal pro Minute prüfen
           const current = await read($, info)
           if (current?.fiveHour !== undefined || current?.sevenDay !== undefined) {
             const clockMinute = Math.floor((await $.clock.now()) / MINUTE)
@@ -486,17 +501,9 @@ export const register: Register = on => {
           }
           const request = await read($, last)
           if (request === null) return
-          const sinceExpiry = (await $.clock.now()) - (request.at + request.ttlMs)
-          if (sinceExpiry <= 0) {
-            drawnMinute = -1
-            $.ui.invalidate('ui.render')
-          } else {
-            const minute = Math.floor(sinceExpiry / MINUTE)
-            if (minute !== drawnMinute) {
-              drawnMinute = minute
-              $.ui.invalidate('ui.render')
-            }
-          }
+          const isWarm = (await $.clock.now()) < request.at + request.ttlMs
+          if (isWarm || wasWarm) $.ui.invalidate('ui.render')
+          wasWarm = isWarm
         } catch {
           // Beim nächsten Takt erneut
         }
@@ -655,16 +662,26 @@ export const register: Register = on => {
     const request = await read($, last)
     const now = await $.clock.now()
 
-    const isNarrow = e.props.bodyColumns < 90
+    // Eine Zeile aus Gruppen: Label, Balken aus 10 Einheiten, ein kurzer Wert
+    type Group = {
+      label: string
+      cells: Unit[]
+      tone: Tone
+      emptyTone?: Tone
+      value: string
+      valueTone?: Tone
+      alt: string
+    }
+    const groups: Group[] = []
 
-    // Zeile 1: Kontext, die Auto-Compact-Schwelle als Marke im Balken
+    // Kontext, die Auto-Compact-Schwelle als gelbe Einheit
     const percent = current.percent
     const isEstimated = current.isEstimated === true
     const autoPercent =
       current.isAutoCompactOn === true && current.autoCompactAt !== undefined
         ? (current.autoCompactAt / current.window) * 100
         : undefined
-    const contextColor: Tone =
+    const contextTone: Tone =
       percent === undefined
         ? 'subtle'
         : percent >= 90
@@ -672,216 +689,102 @@ export const register: Register = on => {
           : autoPercent !== undefined && percent >= autoPercent - 5
             ? 'warning'
             : 'success'
-
-    let contextLeft: string
-    if (percent === undefined || current.tokens === undefined) {
-      contextLeft = 'noch keine Messung'
-    } else {
-      contextLeft = `${isEstimated ? '≈' : ''}${formatTokens(current.tokens)} von ${formatTokens(current.window)}`
-      if (isEstimated) contextLeft += ' (geschätzt)'
-    }
-    // Rechts nur die Schwelle in Prozent des Kontextfensters
-    let contextRight: string
-    if (current.isAutoCompactOn === undefined) {
-      contextRight = 'Auto-Compact: unbekannt'
-    } else if (autoPercent === undefined || current.autoCompactAt === undefined) {
-      contextRight = 'Auto-Compact: aus'
-    } else {
-      contextRight = `Auto-Compact: ${Math.round(autoPercent)} %`
-    }
-
-    // Zeile 2: Cache. Der Balken ist die Restzeit bis zum Ablauf (voll direkt nach einer
-    // Anfrage, leer wenn kalt); die Trefferquote steht abgerundet im Text
-    type CacheView =
-      | { kind: 'message'; text: string }
-      | {
-          kind: 'bar'
-          left: number
-          isWarm: boolean
-          remaining: number
-          isEstimate: boolean
-          hit: string
-          tokens: string
-          ttl: string
-          ttlLabel: string
-        }
-    let cache: CacheView
-    if (current.isCachingOff) {
-      cache = { kind: 'message', text: 'abgeschaltet' }
-    } else if (request === null) {
-      cache = { kind: 'message', text: 'wartet auf die nächste Anfrage' }
-    } else if (request.read + request.write === 0) {
-      // Nichts gecacht: Prompt unter der Mindestgröße oder Caching fürs Modell abgeschaltet
-      cache = { kind: 'message', text: 'letzte Anfrage nicht gecacht' }
-    } else {
-      const cached = request.read + request.write
-      const total = cached + request.input
-      const remaining = request.at + request.ttlMs - now
-      const isEstimate = request.isEstimate === true
-      const isWarm = remaining > 0
-      const ttlLabel = request.ttlMs >= HOUR ? '1h' : '5 min'
-      // Treffer sind nur die aus dem Cache gelesenen Token. Neu geschriebene sind ein
-      // Fehlschlag, sonst stünde nach kaltem Cache (alles neu geschrieben) „100 % Treffer“.
-      // Abgerundet: 99,7 % sind noch nicht 100 %. Bei einer Schätzung (fortgesetztes
-      // Gespräch) ist die Quote unbekannt; nach Ablauf gilt sie nur für die letzte Anfrage.
-      const hitPct = Math.floor((request.read / total) * 100)
-      cache = {
-        kind: 'bar',
-        left: Math.max(0, Math.min(100, (remaining / request.ttlMs) * 100)),
-        isWarm,
-        remaining,
-        isEstimate,
-        hit: isEstimate ? '' : `${isWarm ? '' : 'zuletzt '}${hitPct} % Treffer · `,
-        tokens: isEstimate
-          ? `≈${formatTokens(cached)} aus dem fortgesetzten Gespräch`
-          : `${formatTokens(cached)} (${formatTokens(request.read)} gelesen, ${formatTokens(request.write)} neu)`,
-        ttl: `TTL ${ttlLabel}, ${request.ttlSource}`,
-        ttlLabel,
-      }
-    }
-    // Farbe der Restzeit: grün, in der letzten Minute gelb, abgelaufen grau
-    const cacheTone: Tone =
-      cache.kind !== 'bar' || !cache.isWarm ? 'subtle' : cache.remaining < MINUTE ? 'warning' : 'success'
-    const countdown =
-      cache.kind !== 'bar' ? '' : cache.isWarm ? `${cache.isEstimate ? '≈' : ''}${formatDuration(cache.remaining)}` : 'kalt'
-    const contextPctText = percent === undefined ? '' : pct(percent, isEstimated).trim()
-
-    // Zeile 3, nur während /cache-keep-warm läuft
-    const warmState = await read($, warm)
-    let warmText = ''
-    if (warmState !== null) {
-      warmText = `aktiv, noch ${formatSpan(warmState.until - now)} · ${warmState.pings}× aufgefrischt`
-      if (request !== null) {
-        const expiry = request.at + request.ttlMs
-        const due = expiry - leadTime(request.ttlMs)
-        if (expiry >= warmState.until) warmText += ' · Cache hält bis Fensterende'
-        else if (warmState.nextTryAt === undefined) {
-          warmText += due <= now ? ' · Auffrischung läuft' : ` · nächste in ${formatSpan(due - now)}`
-        }
-      } else {
-        warmText += ' · wartet auf die nächste Antwort'
-      }
-    }
-
-    // Was andere Mods und Claude Code selbst hier zeichnen (etwa „You should know“),
-    // bleibt erhalten und steht unter den zwei Zeilen
-    const below = await next(e)
-
-    // Desktop-App: Proportionalschrift, Balken als Vektorgrafik, Einzelheiten
-    // links und rechtsbündig
-    if (e.surface === 'desktop') {
-      const { Box, Text, Svg, Button } = $.ui.resolve(e)
-      const barWidth = isNarrow ? 110 : 180
-
-      const contextSvg = svgBar(
-        barWidth,
-        percent === undefined ? [] : [{ from: 0, to: percent, color: TONE[contextColor] }],
-        autoPercent,
-      )
-      const cacheSvg = svgBar(
-        barWidth,
-        cache.kind === 'bar' && cache.isWarm ? [{ from: 0, to: cache.left, color: TONE[cacheTone] }] : [],
-      )
-
-      const contextAlt =
+    const contextValue = percent === undefined ? '–' : pct(percent, isEstimated).trim()
+    groups.push({
+      label: 'Kontext',
+      cells: units(percent, autoPercent),
+      tone: contextTone,
+      value: contextValue,
+      alt:
         percent === undefined
           ? 'Kontext: noch keine Messung'
-          : `Kontext ${contextPctText} belegt` +
-            (autoPercent === undefined ? '' : `, Auto-Compact bei ${Math.round(autoPercent)} %`)
-      const cacheAlt =
-        cache.kind !== 'bar'
-          ? `Cache: ${cache.text}`
-          : cache.isWarm
-            ? `Cache: noch ${formatDuration(cache.remaining)} von ${cache.ttlLabel}`
-            : `Cache: abgelaufen seit ${formatMinutes(-cache.remaining)}`
+          : `Kontext ${contextValue} belegt` + (autoPercent === undefined ? '' : `, Auto-Compact bei ${Math.round(autoPercent)} %`),
+    })
 
-      const row = (
-        label: string,
-        svg: string,
-        alt: string,
-        pctCell: JSX.Element,
-        left: JSX.Element,
-        right: JSX.Element | null,
-      ) => (
-        <Box flexDirection="row" alignItems="center">
-          <Box width={LABEL}>
-            <Text weight="medium">{label}</Text>
-          </Box>
-          <Svg source={svg} alt={alt} width={barWidth} height={BAR_H} />
-          <Box width={PCT} justifyContent="flex-end" marginRight={2}>
-            {pctCell}
-          </Box>
-          <Box flexGrow={1} flexShrink={1} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2}>
-            {left}
-            {right}
-          </Box>
+    // Cache: der Balken ist die Restzeit bis zum Ablauf (voll direkt nach einer Anfrage).
+    // Ohne Restzeit leer und „–“; abgelaufen sind die leeren Einheiten rot.
+    if (current.isCachingOff || request === null || request.read + request.write === 0) {
+      groups.push({
+        label: 'Cache',
+        cells: units(undefined),
+        tone: 'subtle',
+        value: '–',
+        alt: current.isCachingOff
+          ? 'Cache: abgeschaltet'
+          : request === null
+            ? 'Cache: wartet auf die nächste Anfrage'
+            : 'Cache: letzte Anfrage nicht gecacht',
+      })
+    } else {
+      const remaining = request.at + request.ttlMs - now
+      if (remaining > 0) {
+        // Grün, in der letzten Minute gelb
+        const tone: Tone = remaining < MINUTE ? 'warning' : 'success'
+        const value = `${request.isEstimate === true ? '≈' : ''}${formatDuration(remaining)}`
+        groups.push({
+          label: 'Cache',
+          cells: units(Math.min(100, (remaining / request.ttlMs) * 100)),
+          tone,
+          value,
+          valueTone: tone,
+          alt: `Cache: noch ${value}`,
+        })
+      } else {
+        groups.push({ label: 'Cache', cells: units(undefined), tone: 'subtle', emptyTone: 'error', value: '–', alt: 'Cache: abgelaufen' })
+      }
+    }
+
+    // Nutzungsfenster des Abos, nur die gemeldeten oder gemerkten (storeInfo)
+    for (const w of WINDOWS) {
+      const window = current[w.key]
+      if (window === undefined) continue
+      const view = windowView(window, now)
+      const value = pct(view.percent).trim()
+      groups.push({ label: w.label, cells: units(view.percent), tone: view.tone, value, alt: `${w.name}: ${value}` })
+    }
+
+    // Warmhalte-Zeile, nur während /cache-keep-warm läuft: der Balken ist der Rest des Fensters
+    const warmState = await read($, warm)
+    const warmLeft = warmState === null ? 0 : warmState.until - now
+    const warmCells =
+      warmState === null ? [] : units(Math.min(100, (warmLeft / Math.max(1, warmState.until - warmState.startedAt)) * 100))
+
+    // Was andere Mods und Claude Code selbst hier zeichnen (etwa „You should know“),
+    // bleibt erhalten und steht darunter
+    const below = await next(e)
+
+    // Desktop-App: Proportionalschrift, Balken als Vektorgrafik
+    if (e.surface === 'desktop') {
+      const { Box, Text, Svg, Button } = $.ui.resolve(e)
+      const value = (text: string, tone?: Tone) => (
+        <Box width={PCT} justifyContent="flex-end">
+          {tone === undefined ? <Text tabular>{text}</Text> : <Text tabular color={tone}>{text}</Text>}
         </Box>
       )
-
-      const cachePctCell =
-        cache.kind !== 'bar' ? (
-          <Text>{''}</Text>
-        ) : (
-          <Text tabular color={cache.isWarm ? cacheTone : 'error'}>
-            {countdown}
-          </Text>
-        )
-      const cacheLeft =
-        cache.kind === 'message' ? (
-          <Text dimColor>{cache.text}</Text>
-        ) : (
-          <Text>
-            {cache.isWarm ? '' : `seit ${formatMinutes(-cache.remaining)} · `}
-            {cache.hit}{cache.tokens}
-          </Text>
-        )
-      const cacheRight = cache.kind === 'bar' ? <Text dimColor>{cache.ttl}</Text> : null
-
-      // Rechts neben beiden Zeilen: die Nutzungsfenster als Ringe, Werte im Tooltip.
-      // Ohne gemeldetes Fenster (kein Abo) keine Ringe.
-      const [innerView, outerView] = WINDOWS.map(w => windowView(current[w.key], w.label, w.showWithin, now)) as [
-        WindowView,
-        WindowView,
-      ]
-      const limitsTitle = `${innerView.text}\n${outerView.text}`
-      const rings =
-        innerView.percent === undefined && outerView.percent === undefined ? null : (
-          <Svg
-            source={svgRings(innerView, outerView, limitsTitle)}
-            alt={`Nutzungslimits: ${innerView.text}; ${outerView.text}`}
-            width={RINGS}
-            height={RINGS}
-            isInteractive
-          />
-        )
-
       return (
-        <Box flexDirection="column" rowGap={0}>
-          <Box flexDirection="row" alignItems="center" columnGap={3}>
-            <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-              {row(
-                'Kontext',
-                contextSvg,
-                contextAlt,
-                <Text tabular>{contextPctText}</Text>,
-                <Text tabular>{contextLeft}</Text>,
-                <Text dimColor>{contextRight}</Text>,
-              )}
-              {row('Cache', cacheSvg, cacheAlt, cachePctCell, cacheLeft, cacheRight)}
-            </Box>
-            {rings}
+        <Box flexDirection="column">
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={3}>
+            {groups.map(g => (
+              <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+                <Text weight="medium">{g.label}</Text>
+                <Svg source={svgUnits(g.cells, g.tone, g.emptyTone)} alt={g.alt} width={BAR_W} height={UNIT_H} />
+                {value(g.value, g.valueTone)}
+              </Box>
+            ))}
           </Box>
           {warmState === null ? null : (
-            <Box flexDirection="row" alignItems="center">
-              {/* Ohne Bezeichnung, unter den Balken eingerückt */}
-              <Box width={LABEL} />
-              <Box flexGrow={1} flexShrink={1} flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2}>
-                <Text>
-                  <Text color="success">{warmText}</Text>
-                  {warmState.error === undefined ? '' : <Text color="warning"> · {warmState.error}, neuer Versuch gleich</Text>}
-                </Text>
-                <Button key="keep-warm-stop" label="Beenden" hotkey="b" onPress={() => void stopWarm($)} />
-              </Box>
+            <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+              <Text weight="medium">Warm</Text>
+              <Svg
+                source={svgUnits(warmCells, 'success')}
+                alt={`Cache warm halten: noch ${formatSpan(warmLeft)}`}
+                width={BAR_W}
+                height={UNIT_H}
+              />
+              {value(formatClock(warmLeft), 'success')}
+              <Text>· {warmState.pings}×</Text>
+              {warmState.error === undefined ? null : <Text color="warning">{warmState.error}</Text>}
+              <Button key="keep-warm-stop" label="Beenden" hotkey="b" onPress={() => void stopWarm($)} />
             </Box>
           )}
           {below}
@@ -889,86 +792,49 @@ export const register: Register = on => {
       )
     }
 
-    // Terminal: feste Zellen, Balken aus Blockzeichen
+    // Terminal: Einheiten aus ▰ und ▱, Gruppen fester Breite
     const { Box, Text, Button } = $.ui.resolve(e)
-    const width = isNarrow ? 10 : 20
-
-    const contextCells = cellsFrom(width, [['fill', percent ?? 0]])
-    if (autoPercent !== undefined) {
-      // Die Zelle, mit der die Füllung die Schwelle erreicht
-      contextCells[Math.max(0, cellCount(autoPercent, width) - 1)] = 'mark'
-    }
-    const contextBar = toRuns(contextCells, glyphs).map(run =>
-      run.kind === 'fill' ? (
-        <Text color={contextColor}>{run.text}</Text>
-      ) : run.kind === 'mark' ? (
-        <Text color="warning">{run.text}</Text>
-      ) : (
-        <Text dimColor>{run.text}</Text>
-      ),
+    const bar = (cells: readonly Unit[], tone: Tone, emptyTone?: Tone) => (
+      <Text>
+        {toRuns(cells, glyphs).map(run =>
+          run.kind === 'fill' ? (
+            <Text color={tone}>{run.text}</Text>
+          ) : run.kind === 'mark' ? (
+            <Text color="warning">{run.text}</Text>
+          ) : emptyTone === undefined ? (
+            <Text dimColor>{run.text}</Text>
+          ) : (
+            <Text color={emptyTone}>{run.text}</Text>
+          ),
+        )}
+      </Text>
     )
-
-    let cacheBar = <Text dimColor>{'░'.repeat(width)}</Text>
-    let cachePctCell = <Text>{''}</Text>
-    let cacheLeft = <Text dimColor>{cache.kind === 'message' ? cache.text : ''}</Text>
-    let cacheRight: JSX.Element | null = null
-    if (cache.kind === 'bar') {
-      if (cache.isWarm) {
-        cacheBar = (
-          <Text>
-            {toRuns(cellsFrom(width, [['fill', cache.left]]), glyphs).map(run =>
-              run.kind === 'empty' ? <Text dimColor>{run.text}</Text> : <Text color={cacheTone}>{run.text}</Text>,
-            )}
-          </Text>
-        )
-      }
-      cachePctCell = <Text color={cache.isWarm ? cacheTone : 'error'}>{countdown}</Text>
-      cacheLeft = (
-        <Text>
-          {cache.isWarm ? '' : `seit ${formatMinutes(-cache.remaining)} · `}
-          {cache.hit}{cache.tokens}
-        </Text>
-      )
-      cacheRight = <Text dimColor>{cache.ttl}</Text>
-    }
-
-    const termRow = (label: string, bar: JSX.Element, pctCell: JSX.Element, left: JSX.Element, right: JSX.Element | null) => (
-      <Box flexDirection="row">
-        <Box width={LABEL}>
-          <Text>{label}</Text>
-        </Box>
-        <Box width={width + 1}>{bar}</Box>
-        <Box width={PCT} justifyContent="flex-end" marginRight={2}>
-          {pctCell}
-        </Box>
-        <Box flexGrow={1} flexShrink={1} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2}>
-          {left}
-          {right}
-        </Box>
+    const value = (text: string, tone?: Tone) => (
+      <Box width={PCT} justifyContent="flex-end">
+        {tone === undefined ? <Text>{text}</Text> : <Text color={tone}>{text}</Text>}
       </Box>
     )
-
     return (
       <Box flexDirection="column">
-        {termRow(
-          'Kontext',
-          <Text>{contextBar}</Text>,
-          <Text>{contextPctText}</Text>,
-          <Text>{contextLeft}</Text>,
-          <Text dimColor>{contextRight}</Text>,
-        )}
-        {termRow('Cache', cacheBar, cachePctCell, cacheLeft, cacheRight)}
-        {warmState === null ? null : (
-          <Box flexDirection="row">
-            {/* Ohne Bezeichnung, unter den Balken eingerückt */}
-            <Box width={LABEL} />
-            <Box flexGrow={1} flexShrink={1} flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={2}>
-              <Text>
-                <Text color="success">{warmText}</Text>
-                {warmState.error === undefined ? '' : <Text color="warning"> · {warmState.error}, neuer Versuch gleich</Text>}
-              </Text>
-              <Button key="keep-warm-stop" label="Beenden" hotkey="b" onPress={() => void stopWarm($)} />
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {groups.map(g => (
+            <Box flexDirection="row" flexShrink={0}>
+              <Box width={g.label.length + 1}>
+                <Text>{g.label}</Text>
+              </Box>
+              {bar(g.cells, g.tone, g.emptyTone)}
+              {value(g.value, g.valueTone)}
             </Box>
+          ))}
+        </Box>
+        {warmState === null ? null : (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+            <Text>Warm</Text>
+            {bar(warmCells, 'success')}
+            {value(formatClock(warmLeft), 'success')}
+            <Text>· {warmState.pings}×</Text>
+            {warmState.error === undefined ? null : <Text color="warning">{warmState.error}</Text>}
+            <Button key="keep-warm-stop" label="Beenden" hotkey="b" onPress={() => void stopWarm($)} />
           </Box>
         )}
         {below}

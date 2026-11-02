@@ -46,6 +46,24 @@ export type UsageWindow = {
   percent: number
   /** Zurücksetzung, in Millisekunden seit der Epoche; fehlt, wenn nicht gemeldet. */
   resetsAt?: number
+  /** Wahr, wenn Claude Code das Fenster gerade nicht meldet und der gemerkte Stand gilt. */
+  isRemembered?: boolean
+}
+
+/** Die letzte Meldung eines Nutzungsfensters, über Sitzungen gemerkt ($.store). */
+export type SeenWindow = {
+  /** Wann es zuletzt gemeldet wurde, in Millisekunden seit der Epoche. */
+  at: number
+  /** Verbrauchter Anteil bei dieser Meldung, 0 bis 100. */
+  percent: number
+  /** Zurücksetzung bei dieser Meldung, in Millisekunden seit der Epoche. */
+  resetsAt?: number
+}
+
+/** Gemerkte Nutzungsfenster unter dem Schlüssel `seenWindows.v1` in $.store. */
+export type SeenWindows = {
+  fiveHour?: SeenWindow
+  sevenDay?: SeenWindow
 }
 
 /** Die Cache-Lebensdauer, wie Claude Code selbst sie zuletzt gemeldet hat. */

@@ -1,21 +1,24 @@
 # kontext-cache-band
 
-Claude-Code-Mod, der im Band über dem Eingabefeld zwei gleich aufgebaute Zeilen zeigt, im Terminal und im Code-Tab der Claude-Desktop-App:
+Claude-Code-Mod, der im Band über dem Eingabefeld eine Zeile aus kleinen Balken zeigt, im Terminal und im Code-Tab der Claude-Desktop-App:
 
 ```
-Kontext  █████████░░░░░░░┃░░░   45 %  90k von 200k              Auto-Compact: 84 %
-Cache    ████████████████████  58:30  95 % Treffer · 89k (85k gelesen, 4k neu)      TTL 1h, Abo-Standard
+Kontext ▰▰▰▰▰▱▱▱▱▱  45 %  Cache ▰▰▰▰▰▰▰▰▰▰ 58:30  5 Std ▰▱▱▱▱▱▱▱▱▱  12 %  7 Tage ▱▱▱▱▱▱▱▱▱▱   2 %
 ```
 
-- **Kontext**: Füllstand des Kontextfensters (Werte der letzten Antwort, wie die Statuszeile sie hat). Die Marke `┃` im Balken ist die Auto-Compact-Schwelle. Der Balken ist grün, gelb ab 5 Punkten vor der Schwelle und rot ab 90 %. Dahinter die Token, rechtsbündig die Schwelle in Prozent des Kontextfensters („Auto-Compact: 84 %“), oder „Auto-Compact: aus“.
-- **Cache**: Der Balken ist die Restzeit bis zum Ablauf des Caches: voll direkt nach einer Anfrage, er leert sich über die Lebensdauer (1 Stunde oder 5 Minuten). Grün, in der letzten Minute gelb; abgelaufen ist er leer, daneben steht rot „kalt“ und wie lange schon. Dahinter die Trefferquote der letzten Anfrage und die Token, rechtsbündig die Lebensdauer und ihre Quelle. Als Treffer zählen nur die aus dem Cache gelesenen Token, abgerundet; neu in den Cache geschriebene Token sind keine Treffer. Eine Anfrage auf kalten Cache zeigt deshalb 0 % (oder nahe 0 %). Ist der Cache abgelaufen, steht „zuletzt“ davor, weil die Quote nur für die letzte Anfrage gilt. Bei einem fortgesetzten Gespräch ist sie unbekannt und fehlt, bis die erste Anfrage gelaufen ist. In einem laufenden Gespräch ist die Quote meist hoch, weil jede Anfrage den bisherigen Verlauf aus dem Cache liest; deshalb zeigt der Balken die Restzeit, die sich tatsächlich ändert.
+Jeder Balken hat 10 Einheiten zu je 10 %, daneben steht ein kurzer Wert.
 
-In der Desktop-App stehen rechts neben beiden Zeilen zwei Ringe ineinander für die Nutzungsfenster des Abos, ohne Zahlen: innen das 5-Stunden-Fenster, außen die Woche. Grün, ab 70 % gelb, ab 90 % rot. Fährt man mit der Maus darüber, nennt ein Tooltip die Werte, etwa „5-Stunden-Limit: 12 %“ und „Wochenlimit: 2 %“. Wann ein Fenster zurückgesetzt wird, steht nur kurz davor dabei: beim 5-Stunden-Fenster in der letzten Stunde, bei der Woche in den letzten 12 Stunden (etwa „, neu in 30 min“). Nach der Zurücksetzung steht 0 %, bis die nächste Anfrage den neuen Stand bringt; meldet Claude Code ein Fenster nicht, bleibt sein Ring leer und der Tooltip sagt „nicht gemeldet“. Ohne Abo (API-Schlüssel, Gateway) gibt es keine Ringe, im Terminal nie.
+- **Kontext**: Füllstand des Kontextfensters (Wert der letzten Antwort, wie die Statuszeile ihn hat). Grün, gelb ab 5 Punkten vor der Auto-Compact-Schwelle, rot ab 90 %. Die Einheit, in der die Schwelle liegt, ist gelb, solange sie leer ist. Ohne Messung steht `–`.
+- **Cache**: Restzeit bis zum Ablauf des Caches als `m:ss`. Der Balken ist direkt nach einer Anfrage voll und leert sich über die Lebensdauer (1 Stunde oder 5 Minuten). Grün, in der letzten Minute gelb. Ist der Cache abgelaufen, ist der Balken leer mit roten Einheiten und der Wert `–`. Wartet er auf die nächste Anfrage, ist abgeschaltet oder wurde nichts gecacht, ist der Balken grau und der Wert ebenfalls `–`.
+- **5 Std** und **7 Tage**: die Nutzungsfenster des Abos in Prozent. Grün, ab 70 % gelb, ab 90 % rot. Nach der Zurücksetzung steht 0 %, bis die nächste Anfrage den neuen Stand bringt. Ohne Abo (API-Schlüssel, Gateway) gibt es diese Balken nicht.
 
+Ein `≈` vor einem Wert heißt geschätzt: vor der ersten Antwort, nach `/clear` und nach einer Komprimierung beim Kontext, bei einem fortgesetzten Gespräch beim Cache.
 
-Zur Prüfung gibt `/kontext-cache-band-limits` die Nutzungsfenster unverändert aus, wie Claude Code sie gerade meldet, und daneben, was der Mod zuletzt gespeichert hat. Laut Claude-Code-Doku kann jedes Fenster unabhängig vom anderen fehlen, und ein Fenster fällt weg, sobald seine Zurücksetzung vorbei ist.
+Nicht jeder Plan hat jedes Nutzungsfenster, der große Max-Plan etwa kein 5-Stunden-Limit. Außerdem meldet Claude Code die Fenster erst nach der ersten Antwort einer Sitzung, und ein Fenster fällt kurz weg, sobald seine Zurücksetzung vorbei ist. Deshalb merkt sich der Mod jedes gemeldete Fenster über Sitzungen hinweg. Ein Fenster bekommt einen Balken, solange es in den letzten 7 Tagen gemeldet wurde. Fehlt es gerade, gilt der gemerkte Stand, nach dessen Zurücksetzung 0 %. Ein Fenster, das nie gemeldet wurde, bekommt keinen Balken.
 
-Die drei vorderen Spalten haben feste Breiten, damit die Balken übereinander stehen. Im Terminal sind die Balken aus Blockzeichen; die Desktop-App zeichnet mit Proportionalschrift, dort sind es abgerundete Grafik-Balken (Marke als senkrechter Strich). Unter 90 Zeichen Breite werden die Balken kürzer, die Einzelheiten brechen um.
+Zur Prüfung gibt `/kontext-cache-band-limits` die Nutzungsfenster unverändert aus, wie Claude Code sie gerade meldet, dazu was der Mod zuletzt gespeichert und über Sitzungen gemerkt hat.
+
+Im Terminal sind die Einheiten die Zeichen `▰` und `▱`, die Desktop-App zeichnet kleine abgerundete Rechtecke. Passt die Zeile nicht in die Breite, rutschen ganze Gruppen aus Bezeichnung, Balken und Wert in eine zweite Zeile.
 
 ## Cache warm halten: `/cache-keep-warm`
 
@@ -29,18 +32,19 @@ Hält den Prompt-Cache des Gesprächs für ein Zeitfenster warm, etwa über eine
 
 Kurz vor jedem Ablauf (5 min vorher bei 1 h Lebensdauer, 1 min vorher bei 5 min) schickt der Mod die letzte Anfrage des Gesprächs mit `$.model.fork` noch einmal ab. Die API liest sie aus dem Cache, und jeder Treffer setzt die Lebensdauer ohne Aufpreis neu. Das Gespräch selbst bekommt keine Nachricht dazu. Hält der Cache ohnehin bis zum Fensterende, wird nicht mehr aufgefrischt.
 
-Solange es läuft, zeigt das Band eine dritte Zeile (ohne Bezeichnung, unter den Balken eingerückt) mit Restzeit des Fensters, Zahl der Auffrischungen, nächster Auffrischung und dem Knopf „Beenden“. Es endet von selbst mit dem Fenster, nach `/clear` oder einem Gesprächswechsel, und wenn es nichts mehr aufzufrischen gibt. Schlägt eine Auffrischung fehl, steht das in der Zeile, und nach 30 Sekunden folgt ein neuer Versuch.
+Solange es läuft, zeigt das Band eine zweite Zeile „Warm“: einen Balken für den Rest des Zeitfensters, die Restzeit als `h:mm`, die Zahl der Auffrischungen (etwa `· 2×`) und den Knopf „Beenden“. Es endet von selbst mit dem Fenster, nach `/clear` oder einem Gesprächswechsel, und wenn es nichts mehr aufzufrischen gibt. Schlägt eine Auffrischung fehl, steht das kurz in der Zeile (etwa „Auffrischung fehlgeschlagen (529)“), und nach 30 Sekunden folgt ein neuer Versuch.
 
 Kosten: Jede Auffrischung liest den ganzen Kontext aus dem Cache (zum Cache-Lesepreis, laut Anthropic ein Bruchteil des normalen Eingabepreises) und zählt im Abo zur Nutzung. Bei 1 h Lebensdauer ist das etwa eine Auffrischung pro Stunde, bei 5 min rund zwölf. Ist der Cache beim Start schon abgelaufen, baut die erste Auffrischung ihn neu auf, das kostet einmal einen Schreibvorgang. Läuft der Rechner nicht (Ruhezustand, App geschlossen), wird nicht aufgefrischt.
 
 ## Wann sich die Anzeige aktualisiert
 
-- Nach jeder Modellanfrage des Hauptgesprächs (oft mehrmals pro Runde): beide Zeilen.
-- Nach jeder Runde und wenn sich ein Nutzungsfenster bewegt: Kontext und Auto-Compact.
-- Jede Sekunde, solange der Cache warm ist: die Restzeit. Danach einmal pro Minute „kalt seit … min“.
+- Nach jeder Modellanfrage des Hauptgesprächs (oft mehrmals pro Runde): alle Balken.
+- Nach jeder Runde und wenn sich ein Nutzungsfenster bewegt: Kontext und Nutzungsfenster.
+- Jede Sekunde, solange der Cache warm ist: die Restzeit. Beim Ablauf einmal (leerer Balken).
+- Einmal pro Minute, solange Nutzungsfenster angezeigt werden: nach einer Zurücksetzung 0 %.
 - Nach geänderten Einstellungen, einem Modellwechsel, `/clear`, einem Gesprächswechsel und einer Komprimierung: sofort.
 
-Vor der ersten Antwort, nach `/clear` und nach einer Komprimierung gibt es keinen gemessenen Kontextwert. Dann zeigt die Zeile Claude Codes Schätzung mit `≈` und „(geschätzt)“. Während eine einzelne Antwort noch läuft, steht die Zeile auf dem Stand der vorigen Anfrage, weil die API die Token erst am Ende meldet.
+Vor der ersten Antwort, nach `/clear` und nach einer Komprimierung gibt es keinen gemessenen Kontextwert. Dann zeigt der Kontext Claude Codes Schätzung mit `≈`. Während eine einzelne Antwort noch läuft, steht der Kontext auf dem Stand der vorigen Anfrage, weil die API die Token erst am Ende meldet.
 
 ## Wie die Cache-Restzeit berechnet wird
 

@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Mounted } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const BAND = {
@@ -61,7 +61,9 @@ let stepUsage: unknown = STEP_RESULT.usage
 const toasts: string[] = []
 
 // Was unter dem Mod steht: Claude Code und andere Mods, hier eine Zeile „unten“
-function engine(on: On, usage: unknown = USAGE) {
+// store: Vorbelegung des Speichers ($.store) wie aus früheren Sitzungen, null für keinen
+function engine(on: On, usage: unknown = USAGE, store: Readonly<Record<string, unknown>> | null = {}) {
+  if (store !== null) mock.store(on, store)
   forkAnswer = FORK_OK
   forks = 0
   stepUsage = STEP_RESULT.usage
@@ -91,48 +93,93 @@ function engine(on: On, usage: unknown = USAGE) {
   })
 }
 
-test('Band zeigt Kontext, Auto-Compact und warmen Cache auf jeder Fläche', async ($, on) => {
-  const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, {})
-  engine(on)
+// ---- Hilfen ------------------------------------------------------------------
 
+const NOW = Date.parse('2026-10-29T10:00:00Z') // 29.10.2026, 11:00 in Wien
+const MIN = 60_000
+const H = 60 * MIN
+const D = 24 * H
+const at = (ms: number) => new Date(NOW + ms).toISOString()
+const windows = (five?: [number, number], week?: [number, number]) => [
+  ...(five === undefined ? [] : [{ kind: 'five_hour', percentUsed: five[0], resetsAt: at(five[1]) }]),
+  ...(week === undefined ? [] : [{ kind: 'seven_day', percentUsed: week[0], resetsAt: at(week[1]) }]),
+]
+
+type Drawing = Mounted<'terminal' | 'desktop', 'AbovePrompt'>
+
+// Quelltext der Balkengrafik, deren Bildbeschreibung passt (Desktop)
+async function svgOf(ui: Drawing, alt: RegExp): Promise<string> {
+  const svg = (await ui.findAll({ type: 'Svg' })).find(s => alt.test(String(s.props.alt)))
+  return String(svg?.props.source)
+}
+
+// Zahl der Einheiten einer Balkengrafik in einer Farbe; ohne Farbe alle Einheiten
+function units(source: string, color?: string): number {
+  const rects = source.match(/<rect [^>]*\/>/g) ?? []
+  return color === undefined ? rects.length : rects.filter(r => r.includes(`fill="${color}"`)).length
+}
+
+// Die Bezeichnungen der Gruppen in der Reihenfolge der Zeile
+async function labels(ui: Drawing): Promise<string[]> {
+  const all = await ui.findAll({ type: 'Text', text: /^(Kontext|Cache|5 Std|7 Tage)$/ })
+  return all.map(t => String(t.text))
+}
+
+async function start($: Engine) {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
     // nur durchlaufen
   }
+}
+
+// ---- Die Zeile -----------------------------------------------------------------
+
+test('Eine Zeile: Kontext, Cache und beide Limits auf jeder Fläche', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows([12, 3 * H], [2, 4 * D]) })
+  await start($)
   await clock.advance(90_000)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    // Einzelheiten: Token links, Auto-Compact rechtsbündig
-    expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBe('90k von 200k')
-    expect((await ui.find({ type: 'Text', text: /^Auto-Compact/ }))?.text).toBe('Auto-Compact: 84 %')
-    expect((await ui.find({ type: 'Text', text: /^45 %$/ }))?.text).toBe('45 %')
-    // Cache: Restzeit in der Spalte neben dem Balken, Trefferquote nur aus gelesenen Token, abgerundet (85k von 90k sind 94,4 %, also 94 %)
-    expect((await ui.find({ type: 'Text', text: /^58:30$/ }))?.text).toBe('58:30')
-    expect((await ui.find({ type: 'Text', text: /gelesen/ }))?.text).toBe('94 % Treffer · 89k (85k gelesen, 4k neu)')
-    expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toBe('TTL 1h, Abo-Standard')
-    // Je Zeile ein Einzelheiten-Block mit links und rechts verteilten Teilen
-    const spread = (await ui.findAll({ type: 'Box' })).filter(b => b.props.justifyContent === 'space-between')
-    expect(spread.length).toBe(2)
+    expect(await labels(ui)).toEqual(['Kontext', 'Cache', '5 Std', '7 Tage'])
+    // Je ein kurzer Wert: Kontext in Prozent, Cache als Restzeit, Limits in Prozent
+    for (const value of ['45 %', '58:30', '12 %', '2 %']) {
+      expect((await ui.find({ type: 'Text', text: new RegExp(`^${value}$`) }))?.text).toBe(value)
+    }
+    // Keine Erklärtexte mehr
+    expect(await ui.find({ type: 'Text', text: /von 200k|TTL|Treffer|gelesen|Auto-Compact|Limit/ })).toBeUndefined()
+    // Gruppen brechen als Ganzes um, statt zu schrumpfen
+    const row = (await ui.findAll({ type: 'Box' })).find(b => b.props.flexWrap === 'wrap')
+    expect(row).toBeDefined()
     if (surface === 'terminal') {
-      // Kontext-Balken: 9 von 20 Zellen gefüllt, Marke bei 84 %
-      expect((await ui.find({ type: 'Text', text: /┃/ }))?.text).toBe('█████████░░░░░░░┃░░░')
-      // Restzeit 58:30 von 60:00 sind 97,5 %, gerundet alle 20 Zellen
-      expect((await ui.find({ type: 'Text', text: /^█{20}$/ }))?.text).toBe('█'.repeat(20))
+      // Einheiten aus ▰ und ▱, 10 je Balken; 45 % sind 4,5, gerundet 5 Einheiten
+      // Nur die äußeren Balkentexte: die gefärbten Abschnitte darin passen bei einfarbigen Balken auch
+      const bars = (await ui.findAll({ type: 'Text', text: /^[▰▱]{10}$/ }))
+        .filter(t => t.props.color === undefined && t.props.dimColor === undefined)
+        .map(t => t.text)
+      expect(bars).toEqual(['▰▰▰▰▰▱▱▱▱▱', '▰▰▰▰▰▰▰▰▰▰', '▰▱▱▱▱▱▱▱▱▱', '▱▱▱▱▱▱▱▱▱▱'])
+      // Die Auto-Compact-Schwelle (84 %) liegt in der neunten Einheit: dort ein gelbes ▱
+      const mark = (await ui.findAll({ type: 'Text', text: /^▱$/ })).find(t => t.props.color === 'warning')
+      expect(mark).toBeDefined()
+      expect(await ui.find({ type: 'Svg' })).toBeUndefined()
     } else {
-      // Desktop: keine Blockzeichen, Balken als Grafik
-      expect(await ui.find({ type: 'Text', text: /[█░┃]/ })).toBeUndefined()
-      // Zwei Balken; die Ringe der Nutzungsfenster zählen nicht dazu
-      const bars = (await ui.findAll({ type: 'Svg' })).filter(b => !String(b.props.alt).startsWith('Nutzungslimits'))
-      expect(bars.length).toBe(2)
-      expect(bars[0]?.props.alt).toBe('Kontext 45 % belegt, Auto-Compact bei 84 %')
-      expect(bars[0]?.props.width).toBe(180)
-      const contextSource = String(bars[0]?.props.source)
-      expect(contextSource).toContain('width="81" height="6" fill="#4CB05A"')
-      expect(contextSource).toContain('x="149.3" y="0" width="2"')
-      expect(bars[1]?.props.alt).toBe('Cache: noch 58:30 von 1h')
-      expect(String(bars[1]?.props.source)).toContain('width="175.5" height="6" fill="#4CB05A"')
+      expect(await ui.find({ type: 'Text', text: /[▰▱]/ })).toBeUndefined()
+      const svgs = await ui.findAll({ type: 'Svg' })
+      expect(svgs.map(s => s.props.alt)).toEqual([
+        'Kontext 45 % belegt, Auto-Compact bei 84 %',
+        'Cache: noch 58:30',
+        '5-Stunden-Limit: 12 %',
+        '7-Tage-Limit: 2 %',
+      ])
+      const context = String(svgs[0]?.props.source)
+      expect(units(context)).toBe(10)
+      expect(units(context, '#4CB05A')).toBe(5)
+      // Schwellen-Einheit gelb und blass, an neunter Stelle (x = 8 · 10)
+      expect(context).toContain('<rect x="80" y="0" width="8" height="8" rx="2" fill="#E0A33A" fill-opacity="0.6"/>')
+      expect(units(String(svgs[1]?.props.source), '#4CB05A')).toBe(10)
+      expect(units(String(svgs[2]?.props.source), '#4CB05A')).toBe(1)
     }
     // Was darunter gezeichnet wird, bleibt sichtbar
     expect((await ui.find({ type: 'Text', text: /^unten$/ }))?.text).toBe('unten')
@@ -140,155 +187,137 @@ test('Band zeigt Kontext, Auto-Compact und warmen Cache auf jeder Fläche', asyn
   }
 })
 
-test('Schmale Fläche: kürzere Balken', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+test('Kontext nahe der Schwelle: gefüllt in Warnfarbe, ohne eigene Marke', async ($, on) => {
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
+  engine(on, { ...USAGE, context: { ...USAGE.context, tokens: 176_000, percent: 88 } })
+  await start($)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const context = await svgOf(ui, /^Kontext/)
+  expect(units(context, '#E0A33A')).toBe(9)
+  expect(context).not.toContain('fill-opacity="0.6"')
+  await ui.unmount()
+})
+
+test('Kalter Cache: leerer Balken mit roten Einheiten, Wert –', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' })
   engine(on)
+  await start($)
+  await clock.advance(7 * MIN + 5_000)
 
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const narrow = { ...BAND, props: { ...BAND.props, bodyColumns: 80 } }
-
-  const desktop = await $.ui.mount({ ...narrow, surface: 'desktop' })
-  expect((await desktop.findAll({ type: 'Svg' }))[0]?.props.width).toBe(110)
+  const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const cache = await svgOf(desktop, /^Cache/)
+  expect(units(cache, '#E5534B')).toBe(10)
+  expect((await desktop.findAll({ type: 'Svg' }))[1]?.props.alt).toBe('Cache: abgelaufen')
+  expect(await desktop.find({ type: 'Text', text: /kalt|seit/ })).toBeUndefined()
   await desktop.unmount()
 
-  const terminal = await $.ui.mount({ ...narrow, surface: 'terminal' })
-  expect((await terminal.find({ type: 'Text', text: /┃/ }))?.text).toBe('█████░░┃░░')
+  const terminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const empty = (await terminal.findAll({ type: 'Text', text: /^▱{10}$/ })).find(t => t.props.color === 'error')
+  expect(empty).toBeDefined()
   await terminal.unmount()
 })
 
-test('Kalter Cache mit 5-Minuten-TTL aus der Umgebung', async ($, on) => {
-  const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m', CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' })
-  engine(on)
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
-  await clock.advance(7 * 60_000 + 5_000)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /^kalt$/ }))?.props.color).toBe('error')
-  expect((await ui.find({ type: 'Text', text: /gelesen/ }))?.text).toBe('seit 2 min · zuletzt 94 % Treffer · 89k (85k gelesen, 4k neu)')
-  // Kalter Cache: leerer Balken, nur die Spur
-  const bar = String((await ui.findAll({ type: 'Svg' }))[1]?.props.source)
-  expect(bar).not.toContain('fill="#4CB05A"')
-  expect(bar).not.toContain('fill="#8A8A8A"')
-  expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toContain('TTL 5 min')
-  // Auch mit gesetztem Override nur die Prozentzahl
-  expect((await ui.find({ type: 'Text', text: /^Auto-Compact/ }))?.text).toBe('Auto-Compact: 84 %')
-  await ui.unmount()
-})
-
 test('Nach /clear wartet der Cache auf die nächste Anfrage', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   engine(on)
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
+  await start($)
   await $.session.end({ reason: 'clear' } as never)
 
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /nächste Anfrage/ }))?.text).toBe('wartet auf die nächste Anfrage')
-  await ui.unmount()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    // Kontext und Cache ohne Wert; die Limits bleiben
+    expect((await ui.findAll({ type: 'Text', text: /^–$/ })).length).toBe(2)
+    if (surface === 'desktop') {
+      const cache = await svgOf(ui, /^Cache/)
+      expect(units(cache, '#808080')).toBe(10)
+      expect((await ui.findAll({ type: 'Svg' }))[1]?.props.alt).toBe('Cache: wartet auf die nächste Anfrage')
+    }
+    await ui.unmount()
+  }
 })
 
 test('Nach /compact gilt der alte Kontextwert nicht mehr, kurz danach die Schätzung', async ($, on) => {
-  const clock = mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, {})
   // Claude Code meldet direkt nach der Komprimierung noch den alten Wert, den neuen erst etwas später
   let usage: unknown = USAGE
   engine(on, () => usage)
   const summary = [{ role: 'user', text: 'Zusammenfassung', toolUses: [] }] as const
-  on('session.compact', () => ({ messages: summary }))
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
+  on('session.compact', () => ({ messages: summary }) as never)
+  await start($)
   await $.session.compact({ trigger: 'manual', messages: summary } as never)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBeUndefined()
-  expect((await ui.find({ type: 'Text', text: /keine Messung/ }))?.text).toBe('noch keine Messung')
-  expect((await ui.find({ type: 'Text', text: /nächste Anfrage/ }))?.text).toBe('wartet auf die nächste Anfrage')
+  expect(await ui.find({ type: 'Text', text: /^45 %$/ })).toBeUndefined()
+  expect((await ui.findAll({ type: 'Svg' }))[0]?.props.alt).toBe('Kontext: noch keine Messung')
+  expect((await ui.findAll({ type: 'Text', text: /^–$/ })).length).toBe(2)
 
   usage = { ...USAGE, context: { window: 200_000, breakdown: { ...USAGE.context.breakdown, totalTokens: 30_000 } } }
   await clock.advance(1000)
-  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBe('≈30k von 200k (geschätzt)')
+  expect((await ui.find({ type: 'Text', text: /^≈/ }))?.text).toBe('≈15 %')
   await ui.unmount()
 })
 
-test('Fehlt die Aufschlüsselung, steht Auto-Compact auf unbekannt statt aus', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+test('Fehlt die Aufschlüsselung, hat der Kontext-Balken keine Schwellen-Einheit', async ($, on) => {
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   engine(on, { ...USAGE, context: { tokens: 90_000, window: 200_000, percent: 45 } })
-
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBe('90k von 200k')
-  expect((await ui.find({ type: 'Text', text: /^Auto-Compact/ }))?.text).toBe('Auto-Compact: unbekannt')
+  expect((await ui.find({ type: 'Text', text: /^45 %$/ }))?.text).toBe('45 %')
+  expect(await svgOf(ui, /^Kontext/)).not.toContain('fill-opacity="0.6"')
   await ui.unmount()
 })
 
-test('Ohne Abo-Fenster gilt die 5-Minuten-Lebensdauer schon in der ersten Runde', async ($, on) => {
-  const clock = mock.clock(on, { now: 1_000_000 })
+test('Ohne Abo-Fenster: 5-Minuten-Lebensdauer, keine Limit-Balken', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, {})
-  // Ein Gateway meldet nur ein spend_limit: das ist kein Abo
+  // Ein Gateway meldet nur ein spend_limit: das ist kein Abo und bekommt keinen Balken
   engine(on, { ...USAGE, rateLimits: [{ kind: 'spend_limit', percentUsed: 40 }] })
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
-  await clock.advance(60_000)
+  await start($)
+  await clock.advance(MIN)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^4:00$/ }))?.text).toBe('4:00')
-  expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toBe('TTL 5 min, Standard ohne Abo')
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache'])
   await ui.unmount()
 })
 
-test('Ausgeschöpftes Abo-Fenster: vermutlich Zusatznutzung mit 5 Minuten', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+test('Ausgeschöpftes Abo-Fenster: vermutlich Zusatznutzung mit 5 Minuten, Limit rot', async ($, on) => {
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   engine(on, { ...USAGE, rateLimits: [{ kind: 'five_hour', percentUsed: 100 }] })
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
+  await start($)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toBe('TTL 5 min, Zusatznutzung, vermutet')
+  expect((await ui.find({ type: 'Text', text: /^5:00$/ }))?.text).toBe('5:00')
+  expect((await ui.find({ type: 'Text', text: /^100 %$/ }))?.text).toBe('100 %')
+  expect(units(await svgOf(ui, /^5-Stunden/), '#E5534B')).toBe(10)
   await ui.unmount()
 })
 
 test('Kontext ohne gemessene Antwort zeigt Claude Codes Schätzung', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   engine(on, {
     ...USAGE,
     rateLimits: [],
     context: { window: 200_000, breakdown: { isAutoCompactEnabled: true, autoCompactThreshold: 167_000, totalTokens: 12_000 } },
   })
-
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBe('≈12k von 200k (geschätzt)')
-  expect((await ui.find({ type: 'Text', text: /^Auto-Compact/ }))?.text).toBe('Auto-Compact: 84 %')
   expect((await ui.find({ type: 'Text', text: /≈6 %/ }))?.text).toBe('≈6 %')
   await ui.unmount()
 })
 
-test('Kontext-Zeile folgt jeder Anfrage, nicht erst dem Rundenende', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+test('Kontext folgt jeder Anfrage, nicht erst dem Rundenende', async ($, on) => {
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   let tokens = 90_000
   engine(on, () => ({
@@ -303,12 +332,12 @@ test('Kontext-Zeile folgt jeder Anfrage, nicht erst dem Rundenende', async ($, o
   }
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toContain('120k von 200k')
+  expect((await ui.find({ type: 'Text', text: /^60 %$/ }))?.text).toBe('60 %')
   await ui.unmount()
 })
 
 test('Fortgesetztes Gespräch: Cache-Stand aus Claude Codes Angaben geschätzt', async ($, on) => {
-  mock.clock(on, { now: 10_000_000 })
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
   engine(on, { ...USAGE, rateLimits: [] })
 
@@ -322,21 +351,15 @@ test('Fortgesetztes Gespräch: Cache-Stand aus Claude Codes Angaben geschätzt',
   })
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /fortgesetzten/ }))?.text).toBe('≈70k aus dem fortgesetzten Gespräch')
   expect((await ui.find({ type: 'Text', text: /^≈40:00$/ }))?.text).toBe('≈40:00')
-  expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toBe('TTL 1h, von Claude Code gemeldet')
   await ui.unmount()
 })
 
 test('Modellwechsel: Lebensdauer von Claude Code, Cache des neuen Modells kalt', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
+  mock.clock(on, { now: NOW })
   mock.env(on, {})
-  engine(on)
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
+  engine(on, { ...USAGE, rateLimits: [] })
+  await start($)
   await $.classic.PostModelSwitch({
     from_model: 'a',
     to_model: 'b',
@@ -350,39 +373,181 @@ test('Modellwechsel: Lebensdauer von Claude Code, Cache des neuen Modells kalt',
   })
 
   let ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /nächste Anfrage/ }))?.text).toBe('wartet auf die nächste Anfrage')
+  expect((await ui.findAll({ type: 'Svg' }))[1]?.props.alt).toBe('Cache: wartet auf die nächste Anfrage')
   await ui.unmount()
 
-  // Die nächste Anfrage nimmt die gemeldete Lebensdauer, obwohl ein Abo erkannt wird
+  // Die nächste Anfrage nimmt die gemeldete Lebensdauer
   for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'b', messageCount: 3 } as never)) {
     // nur durchlaufen
   }
   ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /^5:00$/ }))?.text).toBe('5:00')
-  expect((await ui.find({ type: 'Text', text: /^TTL/ }))?.text).toBe('TTL 5 min, von Claude Code gemeldet')
   await ui.unmount()
 })
 
 test('Letzte Minute: Restzeit und Balken gelb', async ($, on) => {
-  const clock = mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' })
   engine(on)
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
-  await clock.advance(4 * 60_000 + 30_000)
+  await start($)
+  await clock.advance(4 * MIN + 30_000)
 
   const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect((await desktop.find({ type: 'Text', text: /^0:30$/ }))?.props.color).toBe('warning')
-  expect(String((await desktop.findAll({ type: 'Svg' }))[1]?.props.source)).toContain('width="18" height="6" fill="#E0A33A"')
+  // 30 s von 5 min sind eine Einheit
+  expect(units(await svgOf(desktop, /^Cache/), '#E0A33A')).toBe(1)
   await desktop.unmount()
 
   const terminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await terminal.find({ type: 'Text', text: /^██$/ }))?.props.color).toBe('warning')
+  expect((await terminal.find({ type: 'Text', text: /^▰$/ }))?.props.color).toBe('warning')
   await terminal.unmount()
 })
+
+// ---- Nutzungsfenster ------------------------------------------------------------
+
+test('Limits: gelb ab 70 %, rot ab 90 %', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows([92, 3 * H], [75, 4 * D]) })
+  await start($)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(units(await svgOf(ui, /^5-Stunden/), '#E5534B')).toBe(9)
+  // 75 % sind 7,5, gerundet 8 Einheiten
+  expect(units(await svgOf(ui, /^7-Tage/), '#E0A33A')).toBe(8)
+  await ui.unmount()
+})
+
+test('Limits: nach der Zurücksetzung 0 %', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows([88, 30 * MIN], [41, 4 * D]) })
+  await start($)
+  await clock.advance(31 * MIN)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^0 %$/ }))?.text).toBe('0 %')
+  expect((await ui.find({ type: 'Text', text: /^41 %$/ }))?.text).toBe('41 %')
+  await ui.unmount()
+})
+
+test('Max-Plan ohne 5-Stunden-Fenster: drei Balken', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows(undefined, [41, 4 * D]) })
+  await start($)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await labels(ui)).toEqual(['Kontext', 'Cache', '7 Tage'])
+    await ui.unmount()
+  }
+})
+
+test('Gemerktes Fenster: fehlt es, gilt der gemerkte Stand bis zur Zurücksetzung', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  let rateLimits: unknown[] = windows([23, 3 * H], [41, 4 * D])
+  engine(on, () => ({ ...USAGE, rateLimits }))
+  await start($)
+
+  // Claude Code meldet die Fenster nicht mehr (etwa kurz nach einer Zurücksetzung)
+  rateLimits = []
+  await start($)
+  let ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '5 Std', '7 Tage'])
+  expect((await ui.find({ type: 'Text', text: /^23 %$/ }))?.text).toBe('23 %')
+  expect((await ui.find({ type: 'Text', text: /^41 %$/ }))?.text).toBe('41 %')
+  await ui.unmount()
+
+  // Nach der gemerkten Zurücksetzung des 5-Stunden-Fensters: 0 %
+  // (in Schritten, weil der Sekundentakt sonst zu viele Aufrufe auf einmal fällig macht)
+  for (let i = 0; i < 6; i += 1) await clock.advance(30 * MIN)
+  await clock.advance(MIN)
+  ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^0 %$/ }))?.text).toBe('0 %')
+  await ui.unmount()
+})
+
+test('Sitzungsstart ohne gemeldete Fenster: gemerkter Stand aus früheren Sitzungen', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: [] }, {
+    'seenWindows.v1': { sevenDay: { at: NOW - D, percent: 41, resetsAt: NOW + 2 * D } },
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '7 Tage'])
+  expect((await ui.find({ type: 'Text', text: /^41 %$/ }))?.text).toBe('41 %')
+  await ui.unmount()
+})
+
+test('Gemerktes Fenster: nach mehr als 7 Tagen ohne Meldung kein Balken', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: [] }, {
+    'seenWindows.v1': { fiveHour: { at: NOW - 8 * D, percent: 23 }, sevenDay: { at: NOW - 8 * D, percent: 41 } },
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache'])
+  await ui.unmount()
+})
+
+test('Speicher nicht lesbar: das Band zeigt trotzdem die gemeldeten Fenster', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H]) }, null)
+  on('store.get', () => {
+    throw new Error('Speicher kaputt')
+  })
+  await start($)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '5 Std'])
+  expect((await ui.find({ type: 'Text', text: /^23 %$/ }))?.text).toBe('23 %')
+  await ui.unmount()
+})
+
+test('Prüfbefehl zeigt gemeldete, gespeicherte und gemerkte Fenster', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H]) })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const result = (await $.command.run({ command: 'kontext-cache-band-limits', args: '' } as never)) as { text: string }
+  expect(result.text).toBe(
+    [
+      'Abfragezeitpunkt (UTC): 2026-10-29T10:00:00.000Z',
+      '',
+      'Von Claude Code gemeldet (rateLimits, Anzahl 1):',
+      '  {"kind":"five_hour","percentUsed":23,"resetsAt":"2026-10-29T13:00:00.000Z"}',
+      '  seven_day: nicht gemeldet',
+      '',
+      'Vom Mod zuletzt gespeichert (Grundlage der Fußzeile):',
+      '  fiveHour: 23 %, Zurücksetzung 2026-10-29T13:00:00.000Z',
+      '  sevenDay: nichts',
+      '',
+      'Über Sitzungen gemerkt (seenWindows.v1, Balken bis 7 Tage nach der letzten Meldung):',
+      '  fiveHour: 23 %, zuletzt gemeldet 2026-10-29T10:00:00.000Z, Zurücksetzung 2026-10-29T13:00:00.000Z',
+      '  sevenDay: nichts',
+    ].join('\n'),
+  )
+})
+
+test('Prüfbefehl ohne Abo-Fenster', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on, { ...USAGE, rateLimits: [] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const result = (await $.command.run({ command: 'kontext-cache-band-limits', args: '' } as never)) as { text: string }
+  expect(result.text).toContain('rateLimits, Anzahl 0')
+  expect(result.text).toContain('  five_hour: nicht gemeldet\n  seven_day: nicht gemeldet')
+  expect(result.text).toContain('  fiveHour: nichts\n  sevenDay: nichts')
+})
+
+// ---- Warm halten ----------------------------------------------------------------
 
 async function firstRequest($: Engine) {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -405,16 +570,21 @@ test('Warm halten: frischt kurz vor Ablauf auf und endet mit dem Zeitfenster', {
   expect(started.text).toContain('Cache wird 2 h lang warm gehalten. Die erste Auffrischung folgt in 55 min.')
 
   let ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /^aktiv/ }))?.text).toBe('aktiv, noch 2 h · 0× aufgefrischt · nächste in 55 min')
+  // Warm-Zeile: Balken des Fensters (voll), Restzeit, Zahl der Auffrischungen, Knopf
+  expect(await ui.find({ type: 'Text', text: /^Warm$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^2:00$/ }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Text', text: /×$/ }))?.text).toBe('· 0×')
+  expect(units(await svgOf(ui, /^Cache warm halten/), '#4CB05A')).toBe(10)
   expect(await ui.find({ type: 'Button', key: 'keep-warm-stop' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^Warm$/ })).toBeUndefined()
+  // Die Erklärtexte von früher stehen nicht mehr da
+  expect(await ui.find({ type: 'Text', text: /aktiv|nächste in/ })).toBeUndefined()
   await ui.unmount()
 
   // Bei 55 min die erste Auffrischung, die Restzeit beginnt von vorn
   await clock.advance(55 * 60_000 + 2_000)
   expect(forks).toBe(1)
   ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /^aktiv/ }))?.text).toContain('1× aufgefrischt · nächste in 55 min')
+  expect((await ui.find({ type: 'Text', text: /×$/ }))?.text).toBe('· 1×')
   expect((await ui.find({ type: 'Text', text: /^5\d:\d\d$|^60:00$/ }))?.text).toMatch(/^(59:5\d|60:00)$/)
   await ui.unmount()
 
@@ -422,13 +592,14 @@ test('Warm halten: frischt kurz vor Ablauf auf und endet mit dem Zeitfenster', {
   await clock.advance(55 * 60_000)
   expect(forks).toBe(2)
   const terminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await terminal.find({ type: 'Text', text: /^aktiv/ }))?.text).toContain('2× aufgefrischt · Cache hält bis Fensterende')
+  expect((await terminal.find({ type: 'Text', text: /×$/ }))?.text).toBe('· 2×')
+  expect(await terminal.find({ type: 'Text', text: /^Warm$/ })).toBeDefined()
   await terminal.unmount()
 
   await clock.advance(11 * 60_000)
   expect(forks).toBe(2)
   ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^aktiv/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Warm$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -442,9 +613,9 @@ test('Warm halten: Beenden im Band und per Befehl', async ($, on) => {
   for (const surface of ['terminal', 'desktop'] as const) {
     await runWarm($, '90m')
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ type: 'Text', text: /^aktiv/ }))?.text).toContain('noch 1 h 30 min')
+    expect((await ui.find({ type: 'Text', text: /^1:30$/ }))?.text).toBe('1:30')
     await ui.press({ key: 'keep-warm-stop' })
-    expect(await ui.find({ type: 'Text', text: /^aktiv/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^Warm$/ })).toBeUndefined()
     await ui.unmount()
   }
 
@@ -495,7 +666,9 @@ test('Warm halten: Fehler zeigt Hinweis und versucht nach 30 s erneut', async ($
   await clock.advance(4 * 60_000 + 2_000)
   expect(forks).toBe(1)
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /fehlgeschlagen/ }))?.text).toContain('0× aufgefrischt · Auffrischung fehlgeschlagen (529), neuer Versuch gleich')
+  const error = await ui.find({ type: 'Text', text: /fehlgeschlagen/ })
+  expect(error?.text).toBe('Auffrischung fehlgeschlagen (529)')
+  expect(error?.props.color).toBe('warning')
   await ui.unmount()
 
   forkAnswer = FORK_OK
@@ -529,163 +702,3 @@ test('Warm halten: /clear beendet es', async ($, on) => {
   expect((await runWarm($, 'stop')).text).toBe('Cache warm halten läuft nicht.')
 })
 
-test('Anfrage auf kalten Cache: neu geschriebene Token zählen nicht als Treffer', async ($, on) => {
-  mock.clock(on, { now: 1_000_000 })
-  mock.env(on, {})
-  engine(on)
-  stepUsage = { input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 89_000, model: 'm' }
-
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
-
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ type: 'Text', text: /gelesen/ }))?.text).toBe('0 % Treffer · 89k (0 gelesen, 89k neu)')
-    await ui.unmount()
-  }
-})
-
-// ---- Nutzungsfenster als Ringe im Band ---------------------------------------
-
-const NOW = Date.parse('2026-10-29T10:00:00Z') // 29.10.2026, 11:00 in Wien
-const MIN = 60_000
-const H = 60 * MIN
-const at = (ms: number) => new Date(NOW + ms).toISOString()
-const windows = (five?: [number, number], week?: [number, number]) => [
-  ...(five === undefined ? [] : [{ kind: 'five_hour', percentUsed: five[0], resetsAt: at(five[1]) }]),
-  ...(week === undefined ? [] : [{ kind: 'seven_day', percentUsed: week[0], resetsAt: at(week[1]) }]),
-]
-
-// Der Ring der Nutzungsfenster in der Desktop-App: die Grafik mit Tooltip
-async function rings($: Engine) {
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const svg = (await ui.findAll({ type: 'Svg' })).find(s => String(s.props.alt).startsWith('Nutzungslimits'))
-  await ui.unmount()
-  return svg
-}
-const titleOf = (svg: { props: Record<string, unknown> } | undefined) =>
-  /<title>([^<]*)<\/title>/.exec(String(svg?.props.source))?.[1]
-
-async function start($: Engine) {
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
-    // nur durchlaufen
-  }
-}
-
-test('Ringe: rechts neben beiden Zeilen, ohne Zahlen, Werte im Tooltip', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([92, 3 * H], [75, 4 * 24 * H]) })
-  await start($)
-  const svg = await rings($)
-  expect(svg?.props.width).toBe(36)
-  expect(svg?.props.height).toBe(36)
-  // Interaktiv gezeichnet, sonst gibt es keinen Tooltip
-  expect(svg?.props.isInteractive).toBe(true)
-  expect(titleOf(svg)).toBe('5-Stunden-Limit: 92 %\nWochenlimit: 75 %')
-  const source = String(svg?.props.source)
-  // Außen (r 16) die Woche gelb ab 70 %, innen (r 10) 5 h rot ab 90 %
-  expect(source).toMatch(/r="16" fill="none" stroke="#E0A33A"/)
-  expect(source).toMatch(/r="10" fill="none" stroke="#E5534B"/)
-  // Keine Zahlen neben den Ringen
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /Limit|Woche|92|75/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('Ringe: Zeit im Tooltip bei 5 h erst in der letzten Stunde', async ($, on) => {
-  const clock = mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([23, 61 * MIN], [41, 4 * 24 * H]) })
-  await start($)
-  expect(titleOf(await rings($))).toBe('5-Stunden-Limit: 23 %\nWochenlimit: 41 %')
-  await clock.advance(MIN)
-  expect(titleOf(await rings($))).toBe('5-Stunden-Limit: 23 %, neu in 1 h\nWochenlimit: 41 %')
-  await clock.advance(MIN)
-  expect(titleOf(await rings($))).toBe('5-Stunden-Limit: 23 %, neu in 59 min\nWochenlimit: 41 %')
-})
-
-test('Ringe: Zeit im Tooltip bei der Woche erst in den letzten 12 Stunden', async ($, on) => {
-  const clock = mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H], [41, 12 * H + MIN]) })
-  await start($)
-  expect(titleOf(await rings($))).toBe('5-Stunden-Limit: 23 %\nWochenlimit: 41 %')
-  await clock.advance(31 * MIN)
-  expect(titleOf(await rings($))).toBe('5-Stunden-Limit: 23 %\nWochenlimit: 41 %, neu in 11 h 30 min')
-})
-
-test('Ringe: nach der Zurücksetzung 0 % ohne Zusatz', async ($, on) => {
-  const clock = mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([88, 30 * MIN], [41, 4 * 24 * H]) })
-  await start($)
-  await clock.advance(31 * MIN)
-  const svg = await rings($)
-  expect(titleOf(svg)).toBe('5-Stunden-Limit: 0 %\nWochenlimit: 41 %')
-  // Innerer Ring nur noch Spur, kein Bogen
-  expect(String(svg?.props.source)).not.toMatch(/r="10"[^>]*stroke-dasharray/)
-})
-
-test('Ringe: ein fehlendes Fenster steht im Tooltip als nicht gemeldet', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H]) })
-  await start($)
-  const svg = await rings($)
-  expect(titleOf(svg)).toBe('5-Stunden-Limit: 23 %\nWochenlimit: nicht gemeldet')
-  expect(String(svg?.props.source)).not.toMatch(/r="16"[^>]*stroke-dasharray/)
-})
-
-test('Ringe: ohne Abo-Fenster keine Ringe', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: [] })
-  await start($)
-  expect(await rings($)).toBeUndefined()
-})
-
-test('Ringe: das Terminal zeigt keine Nutzungsfenster', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H], [41, 4 * 24 * H]) })
-  await start($)
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Limit|Woche|23 %|41 %/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('Prüfbefehl zeigt gemeldete und fehlende Fenster unverändert', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: windows([23, 3 * H]) })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const result = (await $.command.run({ command: 'kontext-cache-band-limits', args: '' } as never)) as { text: string }
-  expect(result.text).toBe(
-    [
-      'Abfragezeitpunkt (UTC): 2026-10-29T10:00:00.000Z',
-      '',
-      'Von Claude Code gemeldet (rateLimits, Anzahl 1):',
-      '  {"kind":"five_hour","percentUsed":23,"resetsAt":"2026-10-29T13:00:00.000Z"}',
-      '  seven_day: nicht gemeldet',
-      '',
-      'Vom Mod zuletzt gespeichert (Grundlage der Fußzeile):',
-      '  fiveHour: 23 %, Zurücksetzung 2026-10-29T13:00:00.000Z',
-      '  sevenDay: nichts',
-    ].join('\n'),
-  )
-})
-
-test('Prüfbefehl ohne Abo-Fenster', async ($, on) => {
-  mock.clock(on, { now: NOW })
-  mock.env(on, {})
-  engine(on, { ...USAGE, rateLimits: [] })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  const result = (await $.command.run({ command: 'kontext-cache-band-limits', args: '' } as never)) as { text: string }
-  expect(result.text).toContain('rateLimits, Anzahl 0')
-  expect(result.text).toContain('  five_hour: nicht gemeldet\n  seven_day: nicht gemeldet')
-  expect(result.text).toContain('  fiveHour: nichts\n  sevenDay: nichts')
-})
