@@ -26,6 +26,8 @@ Der Mod merkt sich, ob die Liste offen war und welcher Tab gewählt war, und ste
 | `✕` | Eintrag löschen, ohne Rückfrage |
 | `🧹` | alle erledigten Einträge des Tabs entfernen, ohne Rückfrage |
 
+Nach `＋` oder `✎` steht der Fokus gleich im Eingabefeld, man kann sofort tippen. Nach dem Speichern oder Abbrechen steht er wieder auf `＋` bzw. `✎`; Esc führt zurück ins Chat-Eingabefeld.
+
 Neue Einträge kommen ans Ende der offenen. Abgehakte rutschen gedimmt und durchgestrichen ans Ende der Liste. Wieder geöffnete stellen sich hinten bei den offenen an. Einträge dürfen mehrzeilig sein; das Eingabefeld hat drei Zeilen, längere Texte scrollen darin. Mehr als eine Leerzeile am Stück wird zu einer, ein Eintrag hat höchstens 500 Zeichen.
 
 In der mobilen App gibt es kein Eingabefeld. Dort lassen sich Einträge nur abhaken und löschen.

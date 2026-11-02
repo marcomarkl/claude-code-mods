@@ -334,6 +334,26 @@ test('Pane: Getipptes übersteht ein Neuzeichnen, der Fokus wird nur einmal gese
   await ui.unmount()
 })
 
+// $.ui.focus hat im Test-Baukasten keine Umsetzung („no implementation for ui.focus“): wohin der
+// Fokus springt, zeigt erst die App. Geprüft wird hier, dass ein fehlender Fokus nichts aufhält.
+test('Fokus nicht verfügbar: Neu anlegen, Bearbeiten und Abbrechen klappen trotzdem', async ($, on) => {
+  engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'todo-add' })
+  expect(await ui.find({ type: 'Input', key: 'todo-new-input' })).toBeDefined()
+  await ui.input({ key: 'todo-new-input', text: 'B', kind: 'submit' })
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'B'])
+  await ui.press({ key: 'todo-edit-i0' })
+  await ui.press({ key: 'todo-edit-cancel-i0' })
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  await ui.press({ key: 'todo-edit-i0' })
+  await ui.press({ key: 'todo-edit-input-i0-save' })
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  expect(itemsIn(PROJECT)[0]?.text).toBe('A')
+  await ui.unmount()
+})
+
 test('Fehlende Datei ist eine leere Liste; unlesbare wird nicht überschrieben und ist gesperrt', async ($, on) => {
   engine(on, { files: { [PROJECT]: '{ kaputt' } })
   await start($)

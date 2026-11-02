@@ -242,6 +242,17 @@ async function setOpen($: EngineInterface, open: boolean) {
   await saveUi($)
 }
 
+// Den Fokusring im Pane auf ein Element setzen. Ein Klick legt den Ring auf den angeklickten
+// Knopf, und ein Ring, den die Person bewegt hat, holt autoFocus nicht mehr ab. Lehnt die
+// Oberfläche ab (Pane ohne Tastatur, Element nicht gezeichnet), bleibt er, wo er ist.
+async function focusOn($: EngineInterface, key: string) {
+  try {
+    await $.ui.focus({ requestId: PANE, key })
+  } catch {
+    // Ohne Fokus bleibt die Bedienung per Klick
+  }
+}
+
 async function setTab($: EngineInterface, scope: Scope) {
   await update($, tab, () => scope)
   await update($, draft, () => null)
@@ -507,23 +518,30 @@ export const register: Register = on => {
     const action = (key: string, label: string, onPress: () => void) => (
       <Button key={key} plain dimColor label={label} onPress={onPress} />
     )
-    const cancel = (key: string) =>
+    // Abbrechen; danach steht der Fokus auf dem Knopf, mit dem das Feld geöffnet wurde
+    const cancel = (key: string, returnKey: string) =>
       action(key, 'Abbrechen', () => {
         typed = undefined
         focusedEditor = undefined
-        void update($, draft, () => null)
+        void update($, draft, () => null).then(() => focusOn($, returnKey))
       })
     // Mehrzeiliges Eingabefeld über die volle Breite (die Spalte dehnt es), darunter Speichern
     // und Abbrechen. Den Fokus setzt es nur beim ersten Zeichnen, und Getipptes überlebt ein
     // Neuzeichnen: sonst flackert der Fokusring, und ein Neuzeichnen setzte den Text zurück.
-    const editor = (key: string, value: string | undefined, cancelKey: string, onSubmit: (value: string) => void) => {
+    const editor = (
+      key: string,
+      value: string | undefined,
+      cancelKey: string,
+      returnKey: string,
+      onSubmit: (value: string) => Promise<unknown>,
+    ) => {
       const isFirst = focusedEditor !== key
       focusedEditor = key
       const text = typed?.key === key ? typed.text : value
       const save = (v: string) => {
         typed = undefined
         focusedEditor = undefined
-        onSubmit(v)
+        void onSubmit(v).then(() => focusOn($, returnKey))
       }
       return (
         <Box flexDirection="column" alignItems="stretch" rowGap={1} marginY={1}>
@@ -544,16 +562,16 @@ export const register: Register = on => {
               variant="primary"
               onPress={() => save(typed?.key === key ? typed.text : (value ?? ''))}
             />
-            {cancel(cancelKey)}
+            {cancel(cancelKey, returnKey)}
           </Box>
         </Box>
       )
     }
     const row = (item: TodoItem) => {
       if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
-        return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, value => {
-          void editItem($, scope, item.id, value).then(() => update($, draft, () => null))
-        })
+        return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, `todo-edit-${item.id}`, value =>
+          editItem($, scope, item.id, value).then(() => update($, draft, () => null)),
+        )
       }
       const at = openItems.findIndex(i => i.id === item.id)
       const canEdit = !item.done && !isLocked
@@ -570,7 +588,13 @@ export const register: Register = on => {
               {item.text}
             </Text>
           </Box>
-          {canEdit ? action(`todo-edit-${item.id}`, ICON.edit, () => void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id }))) : null}
+          {canEdit
+            ? action(`todo-edit-${item.id}`, ICON.edit, () => {
+                void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id })).then(() =>
+                  focusOn($, `todo-edit-input-${item.id}`),
+                )
+              })
+            : null}
           {canEdit && at > 0 ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
           {canEdit && at >= 0 && at < openItems.length - 1
             ? action(`todo-down-${item.id}`, ICON.down, () => void moveItem($, scope, item.id, 1))
@@ -600,7 +624,14 @@ export const register: Register = on => {
               <Button key="todo-clear" plain dimColor label={ICON.clear} onPress={() => void clearDone($, scope)} />
             )}
             {isLocked ? null : (
-              <Button key="todo-add" plain label={ICON.add} onPress={() => void update($, draft, (): Draft => ({ kind: 'new', scope }))} />
+              <Button
+                key="todo-add"
+                plain
+                label={ICON.add}
+                onPress={() => {
+                  void update($, draft, (): Draft => ({ kind: 'new', scope })).then(() => focusOn($, 'todo-new-input'))
+                }}
+              />
             )}
           </Box>
         </Box>
@@ -609,9 +640,9 @@ export const register: Register = on => {
           <Box flexDirection="column">
             {openItems.map(row)}
             {adding
-              ? editor('todo-new-input', undefined, 'todo-new-cancel', value => {
-                  void addItem($, scope, value).then(() => update($, draft, () => null))
-                })
+              ? editor('todo-new-input', undefined, 'todo-new-cancel', 'todo-add', value =>
+                  addItem($, scope, value).then(() => update($, draft, () => null)),
+                )
               : null}
           </Box>
         )}
