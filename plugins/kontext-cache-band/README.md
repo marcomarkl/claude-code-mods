@@ -60,21 +60,21 @@ Grenzen:
 In einer Terminal-Sitzung von Claude Code eingeben:
 
 ```
-/plugin install kontext-cache-band --marketplace marcomarkl/kontext-cache-band
+/plugin install kontext-cache-band --marketplace marcomarkl/claude-code-mods
 ```
 
 Danach `y`, um den Marktplatz hinzuzufügen, und einen Geltungsbereich wählen. Bei einem privaten Repository braucht der Rechner Zugriff auf GitHub (angemeldetes `gh` oder Git-Zugangsdaten).
 
-In der Desktop-App: **+** neben dem Eingabefeld, **Plugins**, **Add marketplace** mit `marcomarkl/kontext-cache-band`, dann **Add plugin**.
+In der Desktop-App: **+** neben dem Eingabefeld, **Plugins**, **Add marketplace** mit `marcomarkl/claude-code-mods`, dann **Add plugin**.
 
 ## Aus einem Ordner laden (Entwicklung)
 
 Ordner dauerhaft für alle Sitzungen der Desktop-App und des Terminals: in `~/.claude/settings.json`
 
 ```json
-{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/Pfad/zu/kontext-cache-band" } }
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/Pfad/zu/claude-code-mods/plugins/kontext-cache-band" } }
 ```
 
-Einmalig im Terminal: `claude --plugin-dir /Pfad/zu/kontext-cache-band`
+Einmalig im Terminal: `claude --plugin-dir /Pfad/zu/claude-code-mods/plugins/kontext-cache-band`
 
 Braucht Claude Code 2.1.287 oder neuer (Desktop-App: 2.1.286), geprüft mit 2.1.312.

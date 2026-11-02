@@ -1,5 +1,0 @@
-{
-  "name": "kontext-cache-band",
-  "owner": { "name": "marcomarkl" },
-  "plugins": [{ "name": "kontext-cache-band", "source": "./" }]
-}

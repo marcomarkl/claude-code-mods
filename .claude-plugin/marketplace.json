@@ -1,0 +1,15 @@
+{
+  "name": "claude-code-mods",
+  "owner": {
+    "name": "marcomarkl"
+  },
+  "metadata": {
+    "description": "Mods für Claude Code von marcomarkl"
+  },
+  "plugins": [
+    {
+      "name": "kontext-cache-band",
+      "source": "./plugins/kontext-cache-band"
+    }
+  ]
+}
