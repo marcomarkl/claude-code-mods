@@ -197,6 +197,32 @@ test('Nach /clear wartet der Cache auf die nächste Anfrage', async ($, on) => {
   await ui.unmount()
 })
 
+test('Nach /compact gilt der alte Kontextwert nicht mehr, kurz danach die Schätzung', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, {})
+  // Claude Code meldet direkt nach der Komprimierung noch den alten Wert, den neuen erst etwas später
+  let usage: unknown = USAGE
+  engine(on, () => usage)
+  const summary = [{ role: 'user', text: 'Zusammenfassung', toolUses: [] }] as const
+  on('session.compact', () => ({ messages: summary }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for await (const _ of $.turn.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 } as never)) {
+    // nur durchlaufen
+  }
+  await $.session.compact({ trigger: 'manual', messages: summary } as never)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /keine Messung/ }))?.text).toBe('noch keine Messung')
+  expect((await ui.find({ type: 'Text', text: /nächste Anfrage/ }))?.text).toBe('wartet auf die nächste Anfrage')
+
+  usage = { ...USAGE, context: { window: 200_000, breakdown: { ...USAGE.context.breakdown, totalTokens: 30_000 } } }
+  await clock.advance(1000)
+  expect((await ui.find({ type: 'Text', text: /von 200k/ }))?.text).toBe('≈30k von 200k (geschätzt)')
+  await ui.unmount()
+})
+
 test('Fehlt die Aufschlüsselung, steht Auto-Compact auf unbekannt statt aus', async ($, on) => {
   mock.clock(on, { now: 1_000_000 })
   mock.env(on, {})

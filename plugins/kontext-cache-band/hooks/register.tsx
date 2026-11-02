@@ -585,16 +585,22 @@ export const register: Register = on => {
     return ended
   })
 
-  // Nach einer Komprimierung des Hauptgesprächs gilt der alte Cache-Stand nicht mehr
+  // Nach einer Komprimierung des Hauptgesprächs gelten der alte Cache-Stand und der alte
+  // Kontextwert nicht mehr. Wenn next(e) zurückkommt, meldet Claude Code noch den Wert von
+  // vor der Komprimierung (gemessen: der neue folgt rund 200 ms später, ohne session.measure),
+  // deshalb sofort leeren und kurz danach messen
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.messages !== undefined) {
       try {
         await update($, last, () => null)
-        await refresh($)
+        await update($, info, v => (v === null ? null : { ...v, tokens: undefined, percent: undefined }))
       } catch {
         // Beim nächsten Messen erneut versuchen
       }
+      $.clock.after(1000, () => {
+        void refresh($).catch(() => undefined)
+      })
     }
     return result
   })
