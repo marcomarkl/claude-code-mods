@@ -10,6 +10,10 @@
     {
       "name": "kontext-cache-band",
       "source": "./plugins/kontext-cache-band"
+    },
+    {
+      "name": "todo-liste",
+      "source": "./plugins/todo-liste"
     }
   ]
 }

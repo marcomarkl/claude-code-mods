@@ -1,0 +1,6 @@
+{
+  "name": "todo-liste",
+  "version": "0.1.0",
+  "description": "ToDo-Liste in einem Pane, global und pro Projekt, bedient über Icons; Schalter rechts unter dem Eingabefeld, Claude kann lesen und anlegen",
+  "types": "./types/index.d.ts"
+}
