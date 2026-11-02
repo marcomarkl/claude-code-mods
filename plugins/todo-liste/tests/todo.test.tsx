@@ -283,7 +283,7 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
   await ui.unmount()
 })
 
-test('Pane: Bearbeiten lässt sich mit ↶ abbrechen', async ($, on) => {
+test('Pane: Bearbeiten lässt sich mit Abbrechen verwerfen', async ($, on) => {
   engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
   await start($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -291,6 +291,26 @@ test('Pane: Bearbeiten lässt sich mit ↶ abbrechen', async ($, on) => {
   expect((await ui.find({ type: 'Input' }))?.props.value).toBe('A')
   await ui.press({ key: 'todo-edit-cancel-i0' })
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  expect(itemsIn(PROJECT)[0]?.text).toBe('A')
+  await ui.unmount()
+})
+
+test('Pane: Speichern unter dem Feld übernimmt das Getippte', async ($, on) => {
+  engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Neu: tippen, dann Speichern
+  await ui.press({ key: 'todo-add' })
+  const save = await ui.find({ type: 'Button', key: 'todo-new-input-save' })
+  expect(save?.props.label).toBe('Speichern')
+  expect((await ui.find({ type: 'Button', key: 'todo-new-cancel' }))?.props.label).toBe('Abbrechen')
+  await ui.input({ key: 'todo-new-input', text: 'B\nzweite Zeile', kind: 'change' })
+  await ui.press({ key: 'todo-new-input-save' })
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'B\nzweite Zeile'])
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  // Ändern: ohne zu tippen speichert es den bisherigen Text unverändert
+  await ui.press({ key: 'todo-edit-i0' })
+  await ui.press({ key: 'todo-edit-input-i0-save' })
   expect(itemsIn(PROJECT)[0]?.text).toBe('A')
   await ui.unmount()
 })

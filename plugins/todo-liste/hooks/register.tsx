@@ -28,7 +28,6 @@ const ICON = {
   up: '↑',
   down: '↓',
   remove: '✕',
-  cancel: '↶',
   warn: '⚠',
 } as const
 
@@ -509,37 +508,44 @@ export const register: Register = on => {
       <Button key={key} plain dimColor label={label} onPress={onPress} />
     )
     const cancel = (key: string) =>
-      action(key, ICON.cancel, () => {
+      action(key, 'Abbrechen', () => {
         typed = undefined
         focusedEditor = undefined
         void update($, draft, () => null)
       })
-    // Mehrzeiliges Eingabefeld, Abbrechen rechts daneben. Den Fokus setzt es nur beim ersten
-    // Zeichnen, und Getipptes überlebt ein Neuzeichnen: sonst flackert der Fokusring, und ein
-    // Neuzeichnen setzte den Text auf den gespeicherten zurück.
+    // Mehrzeiliges Eingabefeld über die volle Breite (die Spalte dehnt es), darunter Speichern
+    // und Abbrechen. Den Fokus setzt es nur beim ersten Zeichnen, und Getipptes überlebt ein
+    // Neuzeichnen: sonst flackert der Fokusring, und ein Neuzeichnen setzte den Text zurück.
     const editor = (key: string, value: string | undefined, cancelKey: string, onSubmit: (value: string) => void) => {
       const isFirst = focusedEditor !== key
       focusedEditor = key
       const text = typed?.key === key ? typed.text : value
+      const save = (v: string) => {
+        typed = undefined
+        focusedEditor = undefined
+        onSubmit(v)
+      }
       return (
-        <Box flexDirection="row" alignItems="flex-end" columnGap={1} marginY={1}>
-          <Box flexGrow={1} flexShrink={1}>
-            <Input
-              key={key}
-              {...(text === undefined ? {} : { value: text })}
-              rows={INPUT_ROWS}
-              {...(isFirst ? { autoFocus: true as const } : {})}
-              onInput={v => {
-                typed = { key, text: v }
-              }}
-              onSubmit={v => {
-                typed = undefined
-                focusedEditor = undefined
-                onSubmit(v)
-              }}
+        <Box flexDirection="column" alignItems="stretch" rowGap={1} marginY={1}>
+          <Input
+            key={key}
+            {...(text === undefined ? {} : { value: text })}
+            rows={INPUT_ROWS}
+            {...(isFirst ? { autoFocus: true as const } : {})}
+            onInput={v => {
+              typed = { key, text: v }
+            }}
+            onSubmit={save}
+          />
+          <Box flexDirection="row" alignItems="center" columnGap={2}>
+            <Button
+              key={`${key}-save`}
+              label="Speichern"
+              variant="primary"
+              onPress={() => save(typed?.key === key ? typed.text : (value ?? ''))}
             />
+            {cancel(cancelKey)}
           </Box>
-          {cancel(cancelKey)}
         </Box>
       )
     }

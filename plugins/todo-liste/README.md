@@ -18,10 +18,10 @@ Der Mod merkt sich, ob die Liste offen war und welcher Tab gewählt war, und ste
 | --- | --- |
 | `🌐 N` | Tab „global“, N offene Einträge |
 | `📁 N` | Tab „aktuelles Projekt“, N offene Einträge |
-| `＋` | neuer Eintrag (rechts oben): Text eingeben, Enter speichert, Shift+Enter bricht um |
+| `＋` | neuer Eintrag (rechts oben): Text eingeben, „Speichern“ oder Enter speichert, Shift+Enter bricht um |
 | `☐` / `☑` | abhaken bzw. wieder öffnen |
-| `✎` | Text ändern, Enter speichert, Shift+Enter bricht um |
-| `↶` | Eingabe abbrechen |
+| `✎` | Text ändern, „Speichern“ oder Enter speichert, Shift+Enter bricht um |
+| „Abbrechen“ | Eingabe verwerfen |
 | `↑` `↓` | offenen Eintrag eine Stelle nach oben bzw. unten schieben |
 | `✕` | Eintrag löschen, ohne Rückfrage |
 | `🧹` | alle erledigten Einträge des Tabs entfernen, ohne Rückfrage |
