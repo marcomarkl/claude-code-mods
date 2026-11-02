@@ -22,8 +22,8 @@ const ICON = {
   project: '📁',
   add: '＋',
   clear: '🧹',
-  open: '○',
-  done: '✓',
+  open: '☐',
+  done: '☑',
   edit: '✎',
   up: '↑',
   down: '↓',
@@ -31,6 +31,9 @@ const ICON = {
   cancel: '↶',
   warn: '⚠',
 } as const
+
+// Das Icon allein ist unter dem Eingabefeld zu unauffällig
+const TOGGLE_LABEL = `${ICON.toggle} ToDos`
 
 const paths = atom({ plugin: 'todo-liste', key: 'paths' } as const, null, { shape: 'v1' })
 const lists = atom({ plugin: 'todo-liste', key: 'lists' } as const, null, { shape: 'v1' })
@@ -212,7 +215,7 @@ async function saveUi($: EngineInterface) {
 // Öffnen oder schließen; zeichnet keine Oberfläche (etwa -p), bleibt der Zustand
 async function setOpen($: EngineInterface, open: boolean) {
   if (open) {
-    const placed = await $.ui.open({ id: PANE, title: ICON.toggle })
+    const placed = await $.ui.open({ id: PANE, title: TOGGLE_LABEL })
     if (!placed.isPlaced) return
     await refresh($)
   } else {
@@ -359,7 +362,7 @@ export const register: Register = on => {
         {modes}
         <Button
           key="todo-toggle"
-          label={count === 0 ? ICON.toggle : `${ICON.toggle} ${count}`}
+          label={count === 0 ? TOGGLE_LABEL : `${TOGGLE_LABEL} ${count}`}
           dimColor={!open}
           onPress={() => void setOpen($, !open)}
         />
@@ -374,12 +377,13 @@ export const register: Register = on => {
     const list = l?.[scope] ?? { items: [] }
     const isLocked = list.error !== undefined
     const openItems = list.items.filter(i => !i.done)
+    const doneItems = list.items.filter(i => i.done)
 
     // Mobil gibt es kein Eingabefeld: dort nur abhaken und löschen
     if (e.surface === 'mobile') {
       const { Box, Text, Button } = $.ui.resolve(e)
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" rowGap={1}>
           <Box flexDirection="row" columnGap={1}>
             {(['global', 'project'] as const).map(s => (
               <Button
@@ -391,42 +395,54 @@ export const register: Register = on => {
             ))}
           </Box>
           {isLocked ? <Text color="warning">{`${ICON.warn} ${list.error}`}</Text> : null}
-          {list.items.map(item => (
-            <Box flexDirection="row" columnGap={1}>
-              <Button key={`todo-toggle-${item.id}`} label={item.done ? ICON.done : ICON.open} onPress={() => void toggleItem($, scope, item.id)} />
-              <Text dimColor={item.done}>{item.text}</Text>
-              <Button key={`todo-remove-${item.id}`} label={ICON.remove} onPress={() => void removeItem($, scope, item.id)} />
-            </Box>
-          ))}
+          <Box flexDirection="column">
+            {list.items.map(item => (
+              <Box flexDirection="row" alignItems="center" columnGap={1}>
+                <Button key={`todo-toggle-${item.id}`} plain label={item.done ? ICON.done : ICON.open} onPress={() => void toggleItem($, scope, item.id)} />
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text dimColor={item.done} strikethrough={item.done}>
+                    {item.text}
+                  </Text>
+                </Box>
+                <Button key={`todo-remove-${item.id}`} plain dimColor label={ICON.remove} onPress={() => void removeItem($, scope, item.id)} />
+              </Box>
+            ))}
+          </Box>
         </Box>
       )
     }
 
     const { Box, Text, Button, Input } = $.ui.resolve(e)
-    const cancel = (key: string) => (
-      <Button key={key} label={ICON.cancel} onPress={() => void update($, draft, () => null)} />
+    // Aktionen einer Zeile: ohne Rahmen, gedimmt, unter dem Zeiger voll sichtbar
+    const action = (key: string, label: string, onPress: () => void) => (
+      <Button key={key} plain dimColor label={label} onPress={onPress} />
     )
+    const cancel = (key: string) => action(key, ICON.cancel, () => void update($, draft, () => null))
     const row = (item: TodoItem) => {
       if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
         return (
-          <Box flexDirection="row" columnGap={1}>
-            <Input
-              key={`todo-edit-input-${item.id}`}
-              value={item.text}
-              autoFocus
-              onSubmit={value => {
-                void editItem($, scope, item.id, value).then(() => update($, draft, () => null))
-              }}
-            />
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            <Box flexGrow={1} flexShrink={1}>
+              <Input
+                key={`todo-edit-input-${item.id}`}
+                value={item.text}
+                autoFocus
+                onSubmit={value => {
+                  void editItem($, scope, item.id, value).then(() => update($, draft, () => null))
+                }}
+              />
+            </Box>
             {cancel(`todo-edit-cancel-${item.id}`)}
           </Box>
         )
       }
       const at = openItems.findIndex(i => i.id === item.id)
+      const canEdit = !item.done && !isLocked
       return (
-        <Box flexDirection="row" columnGap={1}>
+        <Box flexDirection="row" alignItems="center" columnGap={1}>
           <Button
             key={`todo-toggle-${item.id}`}
+            plain
             label={item.done ? ICON.done : ICON.open}
             onPress={() => void toggleItem($, scope, item.id)}
           />
@@ -435,54 +451,63 @@ export const register: Register = on => {
               {item.text}
             </Text>
           </Box>
-          {item.done || isLocked ? null : (
-            <Button key={`todo-edit-${item.id}`} label={ICON.edit} onPress={() => void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id }))} />
-          )}
-          {item.done || isLocked || at <= 0 ? null : (
-            <Button key={`todo-up-${item.id}`} label={ICON.up} onPress={() => void moveItem($, scope, item.id, -1)} />
-          )}
-          {item.done || isLocked || at < 0 || at >= openItems.length - 1 ? null : (
-            <Button key={`todo-down-${item.id}`} label={ICON.down} onPress={() => void moveItem($, scope, item.id, 1)} />
-          )}
-          <Button key={`todo-remove-${item.id}`} label={ICON.remove} onPress={() => void removeItem($, scope, item.id)} />
+          {canEdit ? action(`todo-edit-${item.id}`, ICON.edit, () => void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id }))) : null}
+          {canEdit && at > 0 ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
+          {canEdit && at >= 0 && at < openItems.length - 1
+            ? action(`todo-down-${item.id}`, ICON.down, () => void moveItem($, scope, item.id, 1))
+            : null}
+          {isLocked ? null : action(`todo-remove-${item.id}`, ICON.remove, () => void removeItem($, scope, item.id))}
         </Box>
       )
     }
 
     const adding = editing?.kind === 'new' && editing.scope === scope
     return (
-      <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
-          {(['global', 'project'] as const).map(s => (
-            <Button
-              key={`todo-tab-${s}`}
-              label={`${s === 'global' ? ICON.global : ICON.project} ${openCount(l, s)}`}
-              {...(s === scope ? { variant: 'primary' as const } : {})}
-              onPress={() => void setTab($, s)}
-            />
-          ))}
-          {isLocked ? null : (
-            <Button key="todo-add" label={ICON.add} onPress={() => void update($, draft, (): Draft => ({ kind: 'new', scope }))} />
-          )}
-          {isLocked || list.items.every(i => !i.done) ? null : (
-            <Button key="todo-clear" label={ICON.clear} onPress={() => void clearDone($, scope)} />
-          )}
+      <Box flexDirection="column" rowGap={1}>
+        {/* Kopf: Tabs links, Neu und Aufräumen rechts */}
+        <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={1}>
+          <Box flexDirection="row" columnGap={1}>
+            {(['global', 'project'] as const).map(s => (
+              <Button
+                key={`todo-tab-${s}`}
+                label={`${s === 'global' ? ICON.global : ICON.project} ${openCount(l, s)}`}
+                {...(s === scope ? { variant: 'primary' as const } : {})}
+                onPress={() => void setTab($, s)}
+              />
+            ))}
+          </Box>
+          <Box flexDirection="row" columnGap={2}>
+            {isLocked || doneItems.length === 0 ? null : (
+              <Button key="todo-clear" plain dimColor label={ICON.clear} onPress={() => void clearDone($, scope)} />
+            )}
+            {isLocked ? null : (
+              <Button key="todo-add" plain label={ICON.add} onPress={() => void update($, draft, (): Draft => ({ kind: 'new', scope }))} />
+            )}
+          </Box>
         </Box>
         {isLocked ? <Text color="warning">{`${ICON.warn} ${list.error}`}</Text> : null}
-        {openItems.map(row)}
-        {adding ? (
-          <Box flexDirection="row" columnGap={1}>
-            <Input
-              key="todo-new-input"
-              autoFocus
-              onSubmit={value => {
-                void addItem($, scope, value).then(() => update($, draft, () => null))
-              }}
-            />
-            {cancel('todo-new-cancel')}
+        {openItems.length === 0 && !adding ? null : (
+          <Box flexDirection="column">
+            {openItems.map(row)}
+            {adding ? (
+              <Box flexDirection="row" alignItems="center" columnGap={1}>
+                <Text dimColor>{ICON.open}</Text>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Input
+                    key="todo-new-input"
+                    autoFocus
+                    onSubmit={value => {
+                      void addItem($, scope, value).then(() => update($, draft, () => null))
+                    }}
+                  />
+                </Box>
+                {cancel('todo-new-cancel')}
+              </Box>
+            ) : null}
           </Box>
-        ) : null}
-        {list.items.filter(i => i.done).map(row)}
+        )}
+        {/* Erledigte als eigener Block darunter */}
+        {doneItems.length === 0 ? null : <Box flexDirection="column">{doneItems.map(row)}</Box>}
       </Box>
     )
   })

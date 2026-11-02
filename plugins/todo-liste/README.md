@@ -4,7 +4,7 @@ Claude-Code-Mod für eine ToDo-Liste, im Terminal und im Code-Tab der Claude-Des
 
 ## Ein- und ausblenden
 
-Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `☑`. Gibt es offene Einträge, steht die Zahl dabei, etwa `☑ 3` für Projekt und global zusammen. Ein Klick öffnet oder schließt die Liste.
+Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `☑ ToDos`. Gibt es offene Einträge, steht die Zahl dabei, etwa `☑ ToDos 3` für Projekt und global zusammen. Ein Klick öffnet oder schließt die Liste.
 
 Ohne Maus geht es mit `/todo-liste`. `/todo-liste global` oder `/todo-liste projekt` öffnet die Liste direkt mit diesem Tab.
 
@@ -18,8 +18,8 @@ Der Mod merkt sich, ob die Liste offen war und welcher Tab gewählt war, und ste
 | --- | --- |
 | `🌐 N` | Tab „global“, N offene Einträge |
 | `📁 N` | Tab „aktuelles Projekt“, N offene Einträge |
-| `＋` | neuer Eintrag: Text eingeben, Enter speichert |
-| `○` / `✓` | abhaken bzw. wieder öffnen |
+| `＋` | neuer Eintrag (rechts oben): Text eingeben, Enter speichert |
+| `☐` / `☑` | abhaken bzw. wieder öffnen |
 | `✎` | Text ändern, Enter speichert |
 | `↶` | Eingabe abbrechen |
 | `↑` `↓` | offenen Eintrag eine Stelle nach oben bzw. unten schieben |

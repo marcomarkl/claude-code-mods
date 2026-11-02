@@ -24,7 +24,7 @@ const PANE = {
   component: 'Pane',
   requestId: 'todo-liste',
   props: {
-    title: '☑',
+    title: '☑ ToDos',
     isFocused: true,
     bodyColumns: 60,
     placement: 'dock',
@@ -131,7 +131,7 @@ test('Schalter rechts unter dem Eingabefeld: Icon, mit Zahl offener Einträge', 
     const ui = await $.ui.mount({ ...SESSION_MODE, surface })
     // Claude Codes eigene Modus-Anzeige bleibt
     expect((await ui.find({ type: 'Text', text: 'modus' }))?.text).toBe('modus')
-    expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ 3')
+    expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 3')
     await ui.unmount()
   }
 })
@@ -140,7 +140,7 @@ test('Schalter ohne offene Einträge: nur das Icon', async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑')
+  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos')
   await ui.unmount()
 })
 
@@ -313,12 +313,12 @@ test('Änderungen einer anderen Sitzung kommen nach dem 10-Sekunden-Takt an', as
   const clock = engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
   await start($)
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ 1')
+  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 1')
   files[PROJECT] = fileOf([{ text: 'A' }, { text: 'B' }])
   await clock.advance(5_000)
-  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ 1')
+  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 1')
   await clock.advance(5_000)
-  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ 2')
+  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 2')
   await ui.unmount()
 })
 
@@ -394,6 +394,6 @@ test('Werkzeug: ein Anlegen zieht die Zahl am Schalter nach', async ($, on) => {
   await start($)
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'terminal' })
   await $.tool.call({ tool: TOOL, action: 'add', text: 'neu' } as never)
-  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ 1')
+  expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 1')
   await ui.unmount()
 })
