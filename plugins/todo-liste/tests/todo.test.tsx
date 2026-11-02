@@ -295,6 +295,25 @@ test('Pane: Bearbeiten lässt sich mit ↶ abbrechen', async ($, on) => {
   await ui.unmount()
 })
 
+test('Pane: Getipptes übersteht ein Neuzeichnen, der Fokus wird nur einmal gesetzt', async ($, on) => {
+  engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'todo-edit-i0' })
+  expect((await ui.find({ type: 'Input' }))?.props.autoFocus).toBe(true)
+  await ui.input({ key: 'todo-edit-input-i0', text: 'A geändert', kind: 'change' })
+  await ui.redraw()
+  const input = await ui.find({ type: 'Input' })
+  expect(input?.props.value).toBe('A geändert')
+  expect(input?.props.autoFocus).toBeUndefined()
+  // Abbrechen und erneut öffnen: wieder mit Fokus und dem gespeicherten Text
+  await ui.press({ key: 'todo-edit-cancel-i0' })
+  await ui.press({ key: 'todo-edit-i0' })
+  expect((await ui.find({ type: 'Input' }))?.props.autoFocus).toBe(true)
+  expect((await ui.find({ type: 'Input' }))?.props.value).toBe('A')
+  await ui.unmount()
+})
+
 test('Fehlende Datei ist eine leere Liste; unlesbare wird nicht überschrieben und ist gesperrt', async ($, on) => {
   engine(on, { files: { [PROJECT]: '{ kaputt' } })
   await start($)

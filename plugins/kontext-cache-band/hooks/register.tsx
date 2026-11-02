@@ -9,6 +9,11 @@ const last = atom({ plugin: 'kontext-cache-band', key: 'last' } as const, null, 
 const info = atom({ plugin: 'kontext-cache-band', key: 'info' } as const, null, { shape: 'v4' })
 const ttlHint = atom({ plugin: 'kontext-cache-band', key: 'ttlHint' } as const, null, { shape: 'v3' })
 const warm = atom({ plugin: 'kontext-cache-band', key: 'warm' } as const, null, { shape: 'v1' })
+// Takt fürs Neuzeichnen: Das Band liest ihn beim Zeichnen, ein Weiterzählen zeichnet nur das
+// Band neu. $.ui.invalidate('ui.render') würde jede Sekunde auch fremde Bereiche neu zeichnen,
+// etwa das Pane eines anderen Mods, dessen Eingabefeld dabei den Fokus neu setzt.
+const tick = atom({ plugin: 'kontext-cache-band', key: 'tick' } as const, 0, { shape: 'v1' })
+const redraw = ($: EngineInterface) => update($, tick, n => n + 1)
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -364,7 +369,7 @@ function formatSpan(ms: number): string {
 async function stopWarm($: EngineInterface, reason?: string) {
   await update($, warm, () => null)
   if (reason !== undefined) $.ui.toast(`Cache warm halten beendet: ${reason}`)
-  $.ui.invalidate('ui.render')
+  await redraw($)
 }
 
 // Läuft gerade eine Auffrischung, startet der Sekundentakt keine zweite
@@ -434,7 +439,7 @@ async function runWarmCommand($: EngineInterface, args: string): Promise<string>
   }
   const ms = parsed.kind === 'window' ? parsed.ms : WARM_DEFAULT
   await update($, warm, () => ({ startedAt: now, until: now + ms, pings: state?.pings ?? 0 }))
-  $.ui.invalidate('ui.render')
+  await redraw($)
 
   const request = await read($, last)
   let start: string
@@ -496,13 +501,13 @@ export const register: Register = on => {
             const clockMinute = Math.floor((await $.clock.now()) / MINUTE)
             if (clockMinute !== drawnClockMinute) {
               drawnClockMinute = clockMinute
-              $.ui.invalidate('ui.render')
+              await redraw($)
             }
           }
           const request = await read($, last)
           if (request === null) return
           const isWarm = (await $.clock.now()) < request.at + request.ttlMs
-          if (isWarm || wasWarm) $.ui.invalidate('ui.render')
+          if (isWarm || wasWarm) await redraw($)
           wasWarm = isWarm
         } catch {
           // Beim nächsten Takt erneut
@@ -657,6 +662,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
 
+    await read($, tick)
     const current = await read($, info)
     if (current === null) return next(e)
     const request = await read($, last)

@@ -126,10 +126,15 @@ const INPUT_ROWS = 3
 async function refresh($: EngineInterface) {
   const p = await currentPaths($)
   const next: Lists = { global: await readList($, p.global), project: await readList($, p.project) }
-  await update($, lists, () => next)
+  // Nur bei einer Änderung schreiben: jedes Schreiben zeichnet Schalter und Pane neu
+  if (JSON.stringify(await read($, lists)) !== JSON.stringify(next)) await update($, lists, () => next)
 }
 
 let excludeChecked = ''
+
+// Was im offenen Eingabefeld steht, und welches Feld den Fokus schon bekommen hat
+let typed: { key: string; text: string } | undefined
+let focusedEditor: string | undefined
 
 // Die Projektliste privat halten: einmal je Repo die Zeile in .git/info/exclude ergänzen
 async function ensureExcluded($: EngineInterface, exclude: string) {
@@ -455,6 +460,11 @@ export const register: Register = on => {
     const l = await read($, lists)
     const scope = await read($, tab)
     const editing = await read($, draft)
+    // Kein Feld offen (abgebrochen, Tab gewechselt, Pane zu): das nächste bekommt wieder den Fokus
+    if (editing === null) {
+      typed = undefined
+      focusedEditor = undefined
+    }
     const list = l?.[scope] ?? { items: [] }
     const isLocked = list.error !== undefined
     const openItems = list.items.filter(i => !i.done)
@@ -498,18 +508,41 @@ export const register: Register = on => {
     const action = (key: string, label: string, onPress: () => void) => (
       <Button key={key} plain dimColor label={label} onPress={onPress} />
     )
-    const cancel = (key: string) => action(key, ICON.cancel, () => void update($, draft, () => null))
-    // Eingabefeld über die volle Breite, mehrzeilig; Abbrechen darunter rechts
-    const editor = (key: string, value: string | undefined, cancelKey: string, onSubmit: (value: string) => void) => (
-      <Box flexDirection="column" width="100%" marginY={1}>
-        <Box width="100%">
-          <Input key={key} {...(value === undefined ? {} : { value })} rows={INPUT_ROWS} autoFocus onSubmit={onSubmit} />
-        </Box>
-        <Box flexDirection="row" justifyContent="flex-end">
+    const cancel = (key: string) =>
+      action(key, ICON.cancel, () => {
+        typed = undefined
+        focusedEditor = undefined
+        void update($, draft, () => null)
+      })
+    // Mehrzeiliges Eingabefeld, Abbrechen rechts daneben. Den Fokus setzt es nur beim ersten
+    // Zeichnen, und Getipptes überlebt ein Neuzeichnen: sonst flackert der Fokusring, und ein
+    // Neuzeichnen setzte den Text auf den gespeicherten zurück.
+    const editor = (key: string, value: string | undefined, cancelKey: string, onSubmit: (value: string) => void) => {
+      const isFirst = focusedEditor !== key
+      focusedEditor = key
+      const text = typed?.key === key ? typed.text : value
+      return (
+        <Box flexDirection="row" alignItems="flex-end" columnGap={1} marginY={1}>
+          <Box flexGrow={1} flexShrink={1}>
+            <Input
+              key={key}
+              {...(text === undefined ? {} : { value: text })}
+              rows={INPUT_ROWS}
+              {...(isFirst ? { autoFocus: true as const } : {})}
+              onInput={v => {
+                typed = { key, text: v }
+              }}
+              onSubmit={v => {
+                typed = undefined
+                focusedEditor = undefined
+                onSubmit(v)
+              }}
+            />
+          </Box>
           {cancel(cancelKey)}
         </Box>
-      </Box>
-    )
+      )
+    }
     const row = (item: TodoItem) => {
       if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
         return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, value => {

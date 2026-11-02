@@ -92,6 +92,7 @@ declare module 'claude-code' {
       info: Shaped<SessionInfo | null>
       ttlHint: Shaped<TtlHint | null>
       warm: Shaped<WarmState | null>
+      tick: Shaped<number>
     }
   }
 }

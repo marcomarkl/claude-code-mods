@@ -187,6 +187,19 @@ test('Eine Zeile: Kontext, Cache und beide Limits auf jeder Fläche', async ($, 
   }
 })
 
+test('Countdown zählt im gezeichneten Band jede Sekunde weiter', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  engine(on)
+  await start($)
+  await clock.advance(90_000)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^58:30$/ }))?.text).toBe('58:30')
+  await clock.advance(1_000)
+  expect((await ui.find({ type: 'Text', text: /^58:29$/ }))?.text).toBe('58:29')
+  await ui.unmount()
+})
+
 test('Kontext nahe der Schwelle: gefüllt in Warnfarbe, ohne eigene Marke', async ($, on) => {
   mock.clock(on, { now: NOW })
   mock.env(on, {})
