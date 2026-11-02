@@ -233,10 +233,11 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
   await start($)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
-  // Neu: ans Ende der offenen, mehrzeiliger Text wird einzeilig
+  // Neu: ans Ende der offenen, mehrzeiliges Feld, Umbrüche bleiben
   await ui.press({ key: 'todo-add' })
-  await ui.input({ key: 'todo-new-input', text: 'C\nmit Umbruch', kind: 'submit' })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'B', 'C mit Umbruch'])
+  expect((await ui.find({ type: 'Input' }))?.props.rows).toBe(3)
+  await ui.input({ key: 'todo-new-input', text: 'C  \r\nmit Umbruch\n\n\n\nEnde', kind: 'submit' })
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'B', 'C\nmit Umbruch\n\nEnde'])
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
 
   // Leerer Text legt nichts an
@@ -251,7 +252,7 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
 
   // Abhaken: gedimmt ans Ende
   await ui.press({ key: 'todo-toggle-i0' })
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2', 'C mit Umbruch', 'A✓'])
+  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2', 'C\nmit Umbruch\n\nEnde', 'A✓'])
   expect((await ui.find({ type: 'Text', text: 'A' }))?.props.dimColor).toBe(true)
   expect(itemsIn(PROJECT)[2]?.doneAt).toBe(NOW)
   // Erledigte lassen sich nicht ändern oder verschieben
@@ -263,22 +264,22 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
   expect(await ui.find({ type: 'Button', key: 'todo-up-i1' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `todo-down-${c}` })).toBeUndefined()
   await ui.press({ key: `todo-up-${c}` })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C mit Umbruch', 'B2', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C\nmit Umbruch\n\nEnde', 'B2', 'A'])
 
   // Wieder öffnen: ans Ende der offenen, ohne doneAt
   await ui.press({ key: 'todo-toggle-i0' })
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['C mit Umbruch', 'B2', 'A'])
+  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['C\nmit Umbruch\n\nEnde', 'B2', 'A'])
   expect(itemsIn(PROJECT)[2]?.doneAt).toBeUndefined()
 
   // Löschen ohne Rückfrage
   await ui.press({ key: 'todo-remove-i1' })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C mit Umbruch', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C\nmit Umbruch\n\nEnde', 'A'])
 
   // Aufräumen: nur da, wenn es Erledigte gibt; entfernt sie alle
   expect(await ui.find({ type: 'Button', key: 'todo-clear' })).toBeUndefined()
   await ui.press({ key: 'todo-toggle-i0' })
   await ui.press({ key: 'todo-clear' })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C mit Umbruch'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['C\nmit Umbruch\n\nEnde'])
   await ui.unmount()
 })
 
@@ -390,17 +391,17 @@ test('Werkzeug: ändern, abhaken, wieder öffnen, verschieben, löschen über di
   })
   await start($)
 
-  expect(await call($, { action: 'edit', id: 'i1', text: 'B2\nneu' })).toContain('Geändert: B → B2 neu')
-  expect(itemsIn(PROJECT)[1]?.text).toBe('B2 neu')
+  expect(await call($, { action: 'edit', id: 'i1', text: 'B2\nneu' })).toContain('Geändert: B → B2\\nneu')
+  expect(itemsIn(PROJECT)[1]?.text).toBe('B2\nneu')
 
   expect(await call($, { action: 'done', id: 'i0' })).toContain('Abgehakt: A')
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2 neu', 'C', 'A✓'])
+  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2\nneu', 'C', 'A✓'])
   expect(await call($, { action: 'done', id: 'i0' })).toContain('Schon erledigt: A')
   expect(await call($, { action: 'reopen', id: 'i0' })).toContain('Wieder geöffnet: A')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2 neu', 'C', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'C', 'A'])
 
   expect(await call($, { action: 'move', id: 'i0', direction: 'up' })).toContain('Verschoben nach oben: A')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2 neu', 'A', 'C'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'A', 'C'])
   expect(await call($, { action: 'move', id: 'i1', direction: 'up' })).toContain('Steht schon ganz oben')
   expect(await call($, { action: 'move', id: 'i1', direction: 'seitwärts' })).toContain('direction muss')
 
@@ -409,7 +410,13 @@ test('Werkzeug: ändern, abhaken, wieder öffnen, verschieben, löschen über di
   expect(itemsIn(GLOBAL)[0]?.done).toBe(true)
 
   expect(await call($, { action: 'remove', id: 'i2' })).toContain('Gelöscht: C')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2 neu', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'A'])
+})
+
+test('Werkzeug: list rückt Folgezeilen mehrzeiliger Einträge ein', async ($, on) => {
+  engine(on, { files: { [PROJECT]: fileOf([{ text: 'Release\nmit Notiz' }]) } })
+  await start($)
+  expect(await call($, { action: 'list', scope: 'project' })).toContain('[ ] Release\\n      mit Notiz (id: i0)')
 })
 
 test('Werkzeug: unbekannte id, leerer Text und unbekannte Aktion werden abgelehnt', async ($, on) => {
@@ -435,14 +442,14 @@ test('Werkzeug: gesperrte Liste wird auch über das Werkzeug nicht geändert', a
   expect(files[PROJECT]).toBe('{ kaputt')
 })
 
-test('Werkzeug: leerer Text abgelehnt, Umbruch bereinigt, über 500 Zeichen gekürzt', async ($, on) => {
+test('Werkzeug: leerer Text abgelehnt, Umbruch bleibt, über 500 Zeichen gekürzt', async ($, on) => {
   engine(on)
   await start($)
   const empty = await $.tool.call({ tool: TOOL, action: 'add', text: ' \n ' } as never)
   expect(JSON.stringify(empty)).toContain('Leerer Text')
   await $.tool.call({ tool: TOOL, action: 'add', text: `Zeile 1\r\nZeile 2 ${'x'.repeat(600)}` } as never)
   const text = itemsIn(PROJECT)[0]?.text ?? ''
-  expect(text.startsWith('Zeile 1 Zeile 2 x')).toBe(true)
+  expect(text.startsWith('Zeile 1\nZeile 2 x')).toBe(true)
   expect(text.length).toBe(500)
 })
 

@@ -106,8 +106,21 @@ async function readList($: EngineInterface, path: string): Promise<ListState> {
 // Offene vor erledigten, die Reihenfolge innerhalb bleibt
 const ordered = (items: readonly TodoItem[]) => [...items.filter(i => !i.done), ...items.filter(i => i.done)]
 
-// Einzeilig, ohne Ränder, höchstens 500 Zeichen
-const cleanText = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ').trim().slice(0, MAX_TEXT)
+// Mehrzeilig erlaubt: Zeilenenden ohne Leerraum, höchstens eine Leerzeile am Stück,
+// ohne Ränder, höchstens 500 Zeichen
+const cleanText = (text: string) =>
+  text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/\s+$/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, MAX_TEXT)
+    .trim()
+
+// So viele Zeilen hat das Eingabefeld; Enter speichert, Shift+Enter bricht um
+const INPUT_ROWS = 3
 
 // Beide Listen neu lesen; Schalter, Tabs und Pane lesen nur diesen Zwischenspeicher
 async function refresh($: EngineInterface) {
@@ -264,7 +277,9 @@ async function runTool($: EngineInterface, input: ToolInput): Promise<ToolAnswer
       lines.push('', scope === 'global' ? 'Global:' : 'Projekt:')
       if (list?.error !== undefined) lines.push(`  (Datei nicht lesbar: ${list.error})`)
       else if (list === undefined || list.items.length === 0) lines.push('  (leer)')
-      for (const i of list?.items ?? []) lines.push(`  [${i.done ? 'x' : ' '}] ${i.text} (id: ${i.id})`)
+      for (const i of list?.items ?? []) {
+        lines.push(`  [${i.done ? 'x' : ' '}] ${i.text.replace(/\n/g, '\n      ')} (id: ${i.id})`)
+      }
     }
     return { result: lines.join('\n') }
   }
@@ -484,28 +499,27 @@ export const register: Register = on => {
       <Button key={key} plain dimColor label={label} onPress={onPress} />
     )
     const cancel = (key: string) => action(key, ICON.cancel, () => void update($, draft, () => null))
+    // Eingabefeld über die volle Breite, mehrzeilig; Abbrechen darunter rechts
+    const editor = (key: string, value: string | undefined, cancelKey: string, onSubmit: (value: string) => void) => (
+      <Box flexDirection="column" width="100%" marginY={1}>
+        <Box width="100%">
+          <Input key={key} {...(value === undefined ? {} : { value })} rows={INPUT_ROWS} autoFocus onSubmit={onSubmit} />
+        </Box>
+        <Box flexDirection="row" justifyContent="flex-end">
+          {cancel(cancelKey)}
+        </Box>
+      </Box>
+    )
     const row = (item: TodoItem) => {
       if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
-        return (
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            <Box flexGrow={1} flexShrink={1}>
-              <Input
-                key={`todo-edit-input-${item.id}`}
-                value={item.text}
-                autoFocus
-                onSubmit={value => {
-                  void editItem($, scope, item.id, value).then(() => update($, draft, () => null))
-                }}
-              />
-            </Box>
-            {cancel(`todo-edit-cancel-${item.id}`)}
-          </Box>
-        )
+        return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, value => {
+          void editItem($, scope, item.id, value).then(() => update($, draft, () => null))
+        })
       }
       const at = openItems.findIndex(i => i.id === item.id)
       const canEdit = !item.done && !isLocked
       return (
-        <Box flexDirection="row" alignItems="center" columnGap={1}>
+        <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
           <Button
             key={`todo-toggle-${item.id}`}
             plain
@@ -555,21 +569,11 @@ export const register: Register = on => {
         {openItems.length === 0 && !adding ? null : (
           <Box flexDirection="column">
             {openItems.map(row)}
-            {adding ? (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                <Text dimColor>{ICON.open}</Text>
-                <Box flexGrow={1} flexShrink={1}>
-                  <Input
-                    key="todo-new-input"
-                    autoFocus
-                    onSubmit={value => {
-                      void addItem($, scope, value).then(() => update($, draft, () => null))
-                    }}
-                  />
-                </Box>
-                {cancel('todo-new-cancel')}
-              </Box>
-            ) : null}
+            {adding
+              ? editor('todo-new-input', undefined, 'todo-new-cancel', value => {
+                  void addItem($, scope, value).then(() => update($, draft, () => null))
+                })
+              : null}
           </Box>
         )}
         {/* Erledigte als eigener Block darunter */}
