@@ -159,16 +159,16 @@ async function addItem($: EngineInterface, scope: Scope, raw: string): Promise<T
   return (await change($, scope, items => [...items, item])) ? item : undefined
 }
 
-async function editItem($: EngineInterface, scope: Scope, id: string, raw: string) {
+async function editItem($: EngineInterface, scope: Scope, id: string, raw: string): Promise<boolean> {
   const text = cleanText(raw)
-  if (text === '') return
-  await change($, scope, items => items.map(i => (i.id === id ? { ...i, text } : i)))
+  if (text === '') return false
+  return change($, scope, items => items.map(i => (i.id === id ? { ...i, text } : i)))
 }
 
 // Abhaken rutscht ans Ende der erledigten, wieder öffnen ans Ende der offenen
-async function toggleItem($: EngineInterface, scope: Scope, id: string) {
+async function toggleItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
   const now = await $.clock.now()
-  await change($, scope, items => {
+  return change($, scope, items => {
     const item = items.find(i => i.id === id)
     if (item === undefined) return items
     const { doneAt: _, ...open } = item
@@ -178,8 +178,8 @@ async function toggleItem($: EngineInterface, scope: Scope, id: string) {
 }
 
 // Innerhalb der offenen eine Stelle nach oben oder unten
-async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1) {
-  await change($, scope, items => {
+async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1): Promise<boolean> {
+  return change($, scope, items => {
     const open = items.filter(i => !i.done)
     const at = open.findIndex(i => i.id === id)
     const to = at + by
@@ -193,12 +193,12 @@ async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1
   })
 }
 
-async function removeItem($: EngineInterface, scope: Scope, id: string) {
-  await change($, scope, items => items.filter(i => i.id !== id))
+async function removeItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
+  return change($, scope, items => items.filter(i => i.id !== id))
 }
 
-async function clearDone($: EngineInterface, scope: Scope) {
-  await change($, scope, items => items.filter(i => !i.done))
+async function clearDone($: EngineInterface, scope: Scope): Promise<boolean> {
+  return change($, scope, items => items.filter(i => !i.done))
 }
 
 // ---- Pane und Zustand --------------------------------------------------------
@@ -235,17 +235,25 @@ const openCount = (l: Lists | null, scope: Scope) => (l === null ? 0 : l[scope].
 
 // ---- Werkzeug für Claude -------------------------------------------------------
 
-type ToolInput = { action?: unknown; scope?: unknown; text?: unknown }
+type ToolInput = { action?: unknown; scope?: unknown; text?: unknown; id?: unknown; direction?: unknown }
+type ToolAnswer = { result: string } | { deny: string }
 
-async function runTool($: EngineInterface, input: ToolInput): Promise<{ result: string } | { deny: string }> {
-  if (input.action === 'add') {
-    const scope: Scope = input.scope === 'global' ? 'global' : 'project'
-    const text = typeof input.text === 'string' ? cleanText(input.text) : ''
-    if (text === '') return { deny: 'Leerer Text: nichts angelegt.' }
-    const item = await addItem($, scope, text)
-    if (item === undefined) return { deny: 'Die Listendatei ist nicht lesbar, nichts angelegt.' }
-    return { result: `Angelegt in der ${scope === 'global' ? 'globalen' : 'Projekt'}-Liste: ${item.text}` }
+const scopeName = (scope: Scope) => (scope === 'global' ? 'globalen' : 'Projekt')
+const LOCKED = 'Die Listendatei ist nicht lesbar, nichts geändert.'
+
+// Einen Eintrag über seine Kennung finden, in der Projekt- oder der globalen Liste
+async function locate($: EngineInterface, id: unknown): Promise<{ scope: Scope; item: TodoItem } | undefined> {
+  if (typeof id !== 'string' || id === '') return undefined
+  await refresh($)
+  const l = await read($, lists)
+  for (const scope of ['project', 'global'] as const) {
+    const item = l?.[scope].items.find(i => i.id === id)
+    if (item !== undefined) return { scope, item }
   }
+  return undefined
+}
+
+async function runTool($: EngineInterface, input: ToolInput): Promise<ToolAnswer> {
   if (input.action === 'list') {
     await refresh($)
     const l = await read($, lists)
@@ -256,11 +264,63 @@ async function runTool($: EngineInterface, input: ToolInput): Promise<{ result: 
       lines.push('', scope === 'global' ? 'Global:' : 'Projekt:')
       if (list?.error !== undefined) lines.push(`  (Datei nicht lesbar: ${list.error})`)
       else if (list === undefined || list.items.length === 0) lines.push('  (leer)')
-      for (const i of list?.items ?? []) lines.push(`  [${i.done ? 'x' : ' '}] ${i.text}`)
+      for (const i of list?.items ?? []) lines.push(`  [${i.done ? 'x' : ' '}] ${i.text} (id: ${i.id})`)
     }
     return { result: lines.join('\n') }
   }
-  return { deny: 'Unbekannte Aktion: erlaubt sind "list" und "add".' }
+  if (input.action === 'add') {
+    const scope: Scope = input.scope === 'global' ? 'global' : 'project'
+    const text = typeof input.text === 'string' ? cleanText(input.text) : ''
+    if (text === '') return { deny: 'Leerer Text: nichts angelegt.' }
+    const item = await addItem($, scope, text)
+    if (item === undefined) return { deny: 'Die Listendatei ist nicht lesbar, nichts angelegt.' }
+    return { result: `Angelegt in der ${scopeName(scope)}-Liste: ${item.text} (id: ${item.id})` }
+  }
+  if (input.action === 'clear_done') {
+    const scope: Scope = input.scope === 'global' ? 'global' : 'project'
+    await refresh($)
+    const count = (await read($, lists))?.[scope].items.filter(i => i.done).length ?? 0
+    if (!(await clearDone($, scope))) return { deny: LOCKED }
+    return { result: `${count} erledigte Einträge aus der ${scopeName(scope)}-Liste entfernt.` }
+  }
+
+  // Alle übrigen Aktionen betreffen einen Eintrag, gefunden über seine Kennung aus "list"
+  if (!['edit', 'done', 'reopen', 'remove', 'move'].includes(String(input.action))) {
+    return { deny: 'Unbekannte Aktion: erlaubt sind list, add, edit, done, reopen, move, remove und clear_done.' }
+  }
+  const found = await locate($, input.id)
+  if (found === undefined) return { deny: 'Kein Eintrag mit dieser id. Erst mit action "list" die Kennungen lesen.' }
+  const { scope, item } = found
+  switch (input.action) {
+    case 'edit': {
+      const text = typeof input.text === 'string' ? cleanText(input.text) : ''
+      if (text === '') return { deny: 'Leerer Text: nichts geändert.' }
+      if (!(await editItem($, scope, item.id, text))) return { deny: LOCKED }
+      return { result: `Geändert: ${item.text} → ${text}` }
+    }
+    case 'done':
+    case 'reopen': {
+      const wantDone = input.action === 'done'
+      if (item.done === wantDone) return { result: `Schon ${wantDone ? 'erledigt' : 'offen'}: ${item.text}` }
+      if (!(await toggleItem($, scope, item.id))) return { deny: LOCKED }
+      return { result: `${wantDone ? 'Abgehakt' : 'Wieder geöffnet'}: ${item.text}` }
+    }
+    case 'move': {
+      if (input.direction !== 'up' && input.direction !== 'down') return { deny: 'direction muss "up" oder "down" sein.' }
+      if (item.done) return { deny: 'Erledigte Einträge lassen sich nicht verschieben.' }
+      const open = (await read($, lists))?.[scope].items.filter(i => !i.done) ?? []
+      const at = open.findIndex(i => i.id === item.id)
+      if ((input.direction === 'up' && at <= 0) || (input.direction === 'down' && at >= open.length - 1)) {
+        return { result: `Steht schon ganz ${input.direction === 'up' ? 'oben' : 'unten'}: ${item.text}` }
+      }
+      if (!(await moveItem($, scope, item.id, input.direction === 'up' ? -1 : 1))) return { deny: LOCKED }
+      return { result: `Verschoben nach ${input.direction === 'up' ? 'oben' : 'unten'}: ${item.text}` }
+    }
+    default: {
+      if (!(await removeItem($, scope, item.id))) return { deny: LOCKED }
+      return { result: `Gelöscht: ${item.text}` }
+    }
+  }
 }
 
 export const register: Register = on => {
@@ -280,15 +340,21 @@ export const register: Register = on => {
       await $.tool.register({
         name: TOOL,
         description:
-          'Die ToDo-Liste der Person: action "list" liest die Einträge (scope "global", "project" oder "both", Standard both); ' +
-          'action "add" legt einen Eintrag an (text, scope "project" oder "global", Standard project). ' +
-          'Nur anlegen, wenn die Person es ausdrücklich wünscht. Ändern und Löschen macht die Person selbst im Pane.',
+          'Die ToDo-Liste der Person, eine globale und eine fürs aktuelle Projekt. ' +
+          'action "list" liest die Einträge mit ihrer id (scope "global", "project" oder "both", Standard both). ' +
+          'action "add" legt einen Eintrag an (text; scope "project" oder "global", Standard project). ' +
+          'Mit der id aus "list": "edit" ändert den Text (text), "done" hakt ab, "reopen" öffnet wieder, ' +
+          '"move" verschiebt einen offenen Eintrag um eine Stelle (direction "up" oder "down"), "remove" löscht. ' +
+          '"clear_done" entfernt alle erledigten Einträge einer Liste (scope, Standard project). ' +
+          'Löschen lässt sich nicht rückgängig machen. Nur ändern, wenn die Person es ausdrücklich wünscht.',
         inputSchema: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['list', 'add'] },
+            action: { type: 'string', enum: ['list', 'add', 'edit', 'done', 'reopen', 'move', 'remove', 'clear_done'] },
             scope: { type: 'string', enum: ['global', 'project', 'both'] },
+            id: { type: 'string', description: 'Kennung eines Eintrags, aus action "list"' },
             text: { type: 'string' },
+            direction: { type: 'string', enum: ['up', 'down'] },
           },
           required: ['action'],
         },

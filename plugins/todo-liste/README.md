@@ -45,7 +45,15 @@ Mehrere Sitzungen können dieselbe Liste bearbeiten. Jede Änderung liest die Da
 
 ## Claude und die Liste
 
-Claude bekommt ein Werkzeug `todos` und kann damit die Listen lesen und Einträge anlegen, etwa auf „setz ‚Release bauen‘ auf meine ToDo-Liste“. Ohne Angabe legt Claude im Projekt an, auf Wunsch auch global. Ändern und Löschen macht nur die Person selbst. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
+Claude bekommt ein Werkzeug `todos` und kann damit die Listen lesen und bearbeiten. Zum Beispiel:
+
+- „setz ‚Release bauen‘ auf meine ToDo-Liste“
+- „hak ‚Test‘ ab“
+- „benenn den zweiten Eintrag um in …“
+- „schieb ‚Doku‘ nach oben“
+- „lösch die erledigten im Projekt“
+
+Ohne Angabe legt Claude im Projekt an, auf Wunsch auch global. Beim Ändern trifft Claude einen Eintrag über seine Kennung, die das Lesen der Liste mitliefert. Löschen lässt sich nicht rückgängig machen, wie im Pane. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
 
 ## Installieren
 
