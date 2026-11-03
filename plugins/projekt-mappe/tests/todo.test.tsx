@@ -2,28 +2,28 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { formatTodoMd, parseTodoMd, withIds } from '../hooks/register'
+import { formatTodoMd, parseTodoMd, withIds } from '../hooks/todo'
 import type { TodoItem } from '../types'
 
 const NOW = Date.parse('2026-11-02T10:00:00Z')
 const HOME = '/Users/u'
-const GLOBAL = `${HOME}/.claude/todo-liste/TODO.md`
+const GLOBAL = `${HOME}/.claude/projekt-mappe/TODO.md`
 const REPO = '/work/app'
 const PROJECT = `${REPO}/TODO.md`
 const EXCLUDE = `${REPO}/.git/info/exclude`
-const TOOL = 'mcp__todo-liste__todos'
+const TOOL = 'mcp__projekt-mappe__todos'
 
 const SESSION_MODE = {
-  plugin: 'todo-liste',
+  plugin: 'projekt-mappe',
   component: 'SessionMode',
   requestId: 'session-mode',
   props: { modes: [] },
 } as const
 
 const PANE = {
-  plugin: 'todo-liste',
+  plugin: 'projekt-mappe',
   component: 'Pane',
-  requestId: 'todo-liste',
+  requestId: 'projekt-mappe',
   props: {
     title: '☑ ToDos',
     isFocused: true,
@@ -93,7 +93,7 @@ function engine(on: On, setup: Setup = {}) {
     return { value: { kind, size: 0, mtimeMs: NOW, isLink: false } }
   })
   on('command.register', (_, e) => ({ value: { command: e.name } }))
-  on('tool.register', (_, e) => ({ value: { tool: `mcp__todo-liste__${e.name}` } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__projekt-mappe__${e.name}` } }))
   on('ui.open', () => {
     if (setup.isPlaced === false) return { value: { isPlaced: false, reason: 'no-surface' } }
     isPaneOpen = true
@@ -119,7 +119,7 @@ const fileOf = (items: Array<{ text: string; done?: boolean }>): string =>
   formatTodoMd(items.map(i => ({ text: i.text, done: i.done ?? false })))
 
 const itemsIn = (path: string): TodoItem[] =>
-  withIds(parseTodoMd(files[path] ?? '') ?? [], path.includes('/todo-liste/') ? 'global' : 'project')
+  withIds(parseTodoMd(files[path] ?? '') ?? [], path.includes('/projekt-mappe/') ? 'global' : 'project')
 
 // Die id eines Eintrags, wie der Mod sie beim Lesen bildet
 const idIn = (path: string, text: string, n = 0) => itemsIn(path).filter(i => i.text === text)[n]?.id ?? ''
@@ -223,7 +223,7 @@ test('Schalter öffnet und schließt das Pane und merkt es sich', async ($, on) 
 test('Zeichnet keine Oberfläche, bleibt der Zustand', async ($, on) => {
   engine(on, { isPlaced: false })
   await start($)
-  await $.command.run({ command: 'todo-liste', args: '' } as never)
+  await $.command.run({ command: 'projekt-mappe', args: '' } as never)
   expect(stored['ui.v1']).toBeUndefined()
 })
 
@@ -276,7 +276,7 @@ test('Globale Liste unter CLAUDE_CONFIG_DIR, sonst unter ~/.claude', async ($, o
   engine(on, { env: { CLAUDE_CONFIG_DIR: '/cfg/claude/' } })
   await start($)
   await $.tool.call({ tool: TOOL, action: 'add', scope: 'global', text: 'überall' } as never)
-  expect(itemsIn('/cfg/claude/todo-liste/TODO.md').map(i => i.text)).toEqual(['überall'])
+  expect(itemsIn('/cfg/claude/projekt-mappe/TODO.md').map(i => i.text)).toEqual(['überall'])
   expect(files[GLOBAL]).toBeUndefined()
 })
 
@@ -525,14 +525,14 @@ test('Gemerkt offen: das Pane öffnet beim Start, mit dem gemerkten Tab', async 
   await ui.unmount()
 })
 
-test('Befehl /todo-liste: öffnet, schließt, springt auf den Tab', async ($, on) => {
+test('Befehl /projekt-mappe: öffnet, schließt, springt auf den Tab', async ($, on) => {
   engine(on)
   await start($)
-  await $.command.run({ command: 'todo-liste', args: '' } as never)
+  await $.command.run({ command: 'projekt-mappe', args: '' } as never)
   expect(isPaneOpen).toBe(true)
-  await $.command.run({ command: 'todo-liste', args: '' } as never)
+  await $.command.run({ command: 'projekt-mappe', args: '' } as never)
   expect(isPaneOpen).toBe(false)
-  await $.command.run({ command: 'todo-liste', args: 'global' } as never)
+  await $.command.run({ command: 'projekt-mappe', args: 'global' } as never)
   expect(isPaneOpen).toBe(true)
   expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'global' })
 })

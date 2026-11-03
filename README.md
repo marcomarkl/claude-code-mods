@@ -5,7 +5,7 @@ Sammlung von Mods für Claude Code (Terminal und Code-Tab der Claude-Desktop-App
 | Mod | Inhalt |
 | --- | --- |
 | [kontext-cache-band](plugins/kontext-cache-band/README.md) | Band über dem Eingabefeld mit Kontextfüllstand, Cache-Restzeit, Auto-Compact-Schwelle und den Nutzungslimits des Abos; `/cache-keep-warm` |
-| [todo-liste](plugins/todo-liste/README.md) | ToDo-Liste in einem Pane, global und pro Projekt, bedient über Icons; Schalter rechts unter dem Eingabefeld, Claude kann lesen und bearbeiten |
+| [projekt-mappe](plugins/projekt-mappe/README.md) | Projektmappe in einem Pane: ToDo global und pro Projekt, Backlog und Changelog nach Best Practice verwalten, README, CLAUDE.md, Entscheidungen und Pläne ansehen, fehlende Dateien anlegen; Claude kann lesen und bearbeiten |
 
 ## Installieren
 

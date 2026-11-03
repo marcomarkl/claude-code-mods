@@ -48,7 +48,7 @@ export type UiState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'todo-liste': {
+    'projekt-mappe': {
       paths: Shaped<Paths | null>
       lists: Shaped<Lists | null>
       tab: Shaped<Scope>

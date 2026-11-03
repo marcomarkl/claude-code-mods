@@ -12,8 +12,8 @@
       "source": "./plugins/kontext-cache-band"
     },
     {
-      "name": "todo-liste",
-      "source": "./plugins/todo-liste"
+      "name": "projekt-mappe",
+      "source": "./plugins/projekt-mappe"
     }
   ]
 }

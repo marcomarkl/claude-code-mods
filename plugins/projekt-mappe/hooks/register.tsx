@@ -2,17 +2,17 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Draft, ListState, Lists, Paths, Scope, TodoItem, UiState } from '../types'
+import { cleanText, formatTodoMd, parseTodoMd, withIds } from './todo'
+import type { Entry } from './todo'
 
-const PANE = 'todo-liste'
-const COMMAND = 'todo-liste'
+const PANE = 'projekt-mappe'
+const COMMAND = 'projekt-mappe'
 const TOOL = 'todos'
-const TOOL_ID = 'mcp__todo-liste__todos'
+const TOOL_ID = 'mcp__projekt-mappe__todos'
 // Über Sitzungen gemerkt: ob das Pane offen war und welcher Tab
 const UI_KEY = 'ui.v1'
 // Zeile in .git/info/exclude, damit die Projektliste in keinem Commit landet
 const EXCLUDE_LINE = '/TODO.md'
-const HEADER = '# TODO'
-const MAX_TEXT = 500
 // So oft werden die Dateien neu gelesen, damit Änderungen anderer Sitzungen ankommen
 const REFRESH_MS = 10_000
 
@@ -35,11 +35,11 @@ const ICON = {
 // Das Icon allein ist unter dem Eingabefeld zu unauffällig
 const TOGGLE_LABEL = `${ICON.toggle} ToDos`
 
-const paths = atom({ plugin: 'todo-liste', key: 'paths' } as const, null, { shape: 'v1' })
-const lists = atom({ plugin: 'todo-liste', key: 'lists' } as const, null, { shape: 'v1' })
-const tab = atom({ plugin: 'todo-liste', key: 'tab' } as const, 'project', { shape: 'v1' })
-const draft = atom({ plugin: 'todo-liste', key: 'draft' } as const, null, { shape: 'v1' })
-const isOpen = atom({ plugin: 'todo-liste', key: 'isOpen' } as const, false, { shape: 'v1' })
+const paths = atom({ plugin: 'projekt-mappe', key: 'paths' } as const, null, { shape: 'v1' })
+const lists = atom({ plugin: 'projekt-mappe', key: 'lists' } as const, null, { shape: 'v1' })
+const tab = atom({ plugin: 'projekt-mappe', key: 'tab' } as const, 'project', { shape: 'v1' })
+const draft = atom({ plugin: 'projekt-mappe', key: 'draft' } as const, null, { shape: 'v1' })
+const isOpen = atom({ plugin: 'projekt-mappe', key: 'isOpen' } as const, false, { shape: 'v1' })
 
 // ---- Dateien ---------------------------------------------------------------
 
@@ -48,7 +48,7 @@ const isOpen = atom({ plugin: 'todo-liste', key: 'isOpen' } as const, false, { s
 async function resolvePaths($: EngineInterface): Promise<Paths> {
   const root = await $.session.root()
   const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) ?? ''}/.claude`
-  const global = `${configDir.replace(/\/+$/, '')}/todo-liste/TODO.md`
+  const global = `${configDir.replace(/\/+$/, '')}/projekt-mappe/TODO.md`
   try {
     const git = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
       cwd: root,
@@ -81,75 +81,6 @@ async function currentPaths($: EngineInterface): Promise<Paths> {
   return found
 }
 
-// ---- TODO.md -------------------------------------------------------------------
-//
-// Format nach todo-md: Kopf "# TODO", darunter eine Liste "- [ ] Text" / "- [x] Text".
-// Folgezeilen mehrzeiliger Einträge stehen zwei Leerzeichen eingerückt. Keine IDs, keine Daten.
-
-type Entry = { text: string; done: boolean }
-
-const TASK = /^[-*+] \[( |x|X)\] (.*)$/
-
-// Die Einträge der Datei; undefined, wenn eine Zeile nicht zum Format gehört (fremde Datei)
-export function parseTodoMd(raw: string): Entry[] | undefined {
-  const lines = raw.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n')
-  const entries: Array<{ lines: string[]; done: boolean }> = []
-  let current: { lines: string[]; done: boolean } | undefined
-  let isStart = true
-  for (const line of lines) {
-    if (line.trim() === '') {
-      current?.lines.push('')
-      continue
-    }
-    if (isStart && line.trimEnd() === HEADER) {
-      isStart = false
-      continue
-    }
-    isStart = false
-    const task = TASK.exec(line)
-    if (task !== null) {
-      current = { lines: [task[2] ?? ''], done: task[1] !== ' ' }
-      entries.push(current)
-    } else if (current !== undefined && line.startsWith('  ')) {
-      current.lines.push(line.slice(2))
-    } else {
-      return undefined
-    }
-  }
-  return entries
-    .map(e => ({ text: cleanText(e.lines.join('\n')), done: e.done }))
-    .filter(e => e.text !== '')
-}
-
-export function formatTodoMd(entries: readonly Entry[]): string {
-  if (entries.length === 0) return `${HEADER}\n`
-  const lines = entries.map(e => {
-    const [first, ...rest] = e.text.split('\n')
-    return [`- [${e.done ? 'x' : ' '}] ${first ?? ''}`, ...rest.map(l => (l === '' ? '' : `  ${l}`))].join('\n')
-  })
-  return `${HEADER}\n\n${lines.join('\n')}\n`
-}
-
-// FNV-1a, 32 Bit: kurz, deterministisch, ohne Abhängigkeit
-const hash = (text: string) => {
-  let h = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(36)
-}
-
-// Die id hängt an Liste, Text und Vorkommen gleicher Texte: stabil, solange der Text bleibt
-export const withIds = (entries: readonly Entry[], scope: Scope): TodoItem[] => {
-  const seen = new Map<string, number>()
-  return entries.map(e => {
-    const n = seen.get(e.text) ?? 0
-    seen.set(e.text, n + 1)
-    return { id: `${scope === 'global' ? 'g' : 'p'}${hash(e.text)}-${n}`, text: e.text, done: e.done }
-  })
-}
-
 // Eine fehlende Datei ist eine leere Liste. Eine fremde wird nie überschrieben:
 // die Liste ist gesperrt, bis die Datei wieder dem Format entspricht.
 async function readList($: EngineInterface, path: string, scope: Scope): Promise<ListState> {
@@ -165,19 +96,6 @@ async function readList($: EngineInterface, path: string, scope: Scope): Promise
 
 // Offene vor erledigten, die Reihenfolge innerhalb bleibt
 const ordered = (items: readonly TodoItem[]) => [...items.filter(i => !i.done), ...items.filter(i => i.done)]
-
-// Mehrzeilig erlaubt: Zeilenenden ohne Leerraum, höchstens eine Leerzeile am Stück,
-// ohne Ränder, höchstens 500 Zeichen
-const cleanText = (text: string) =>
-  text
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map(line => line.replace(/\s+$/, ''))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-    .slice(0, MAX_TEXT)
-    .trim()
 
 // So viele Zeilen hat das Eingabefeld; Enter speichert, Shift+Enter bricht um
 const INPUT_ROWS = 3
