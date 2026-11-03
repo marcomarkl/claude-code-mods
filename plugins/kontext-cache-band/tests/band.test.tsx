@@ -482,6 +482,37 @@ test('Gemerktes Fenster: fehlt es, gilt der gemerkte Stand bis zur Zurücksetzun
   await ui.unmount()
 })
 
+test('Planwechsel: fehlt ein Fenster nach seiner Zurücksetzung in einer Meldung, verschwindet es', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  mock.env(on, {})
+  let rateLimits: unknown[] = windows([52, H], [0, 4 * D])
+  engine(on, () => ({ ...USAGE, rateLimits }))
+  await start($)
+
+  // Nur noch das Wochenfenster gemeldet: bis zur Zurücksetzung gilt der gemerkte Stand
+  rateLimits = windows(undefined, [1, 4 * D])
+  await start($)
+  let ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '5 Std', '7 Tage'])
+  expect((await ui.find({ type: 'Text', text: /^52 %$/ }))?.text).toBe('52 %')
+  await ui.unmount()
+
+  // Nach der Zurücksetzung kommt wieder eine Meldung ohne 5-Stunden-Fenster: es gibt es nicht mehr
+  for (let i = 0; i < 2; i += 1) await clock.advance(30 * MIN)
+  await clock.advance(MIN)
+  await start($)
+  ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '7 Tage'])
+  await ui.unmount()
+
+  // Auch eine spätere Sitzung ohne Meldung holt es nicht zurück: es ist vergessen
+  rateLimits = []
+  await start($)
+  ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await labels(ui)).toEqual(['Kontext', 'Cache', '7 Tage'])
+  await ui.unmount()
+})
+
 test('Sitzungsstart ohne gemeldete Fenster: gemerkter Stand aus früheren Sitzungen', async ($, on) => {
   mock.clock(on, { now: NOW })
   mock.env(on, {})
@@ -542,7 +573,7 @@ test('Prüfbefehl zeigt gemeldete, gespeicherte und gemerkte Fenster', async ($,
       '  fiveHour: 23 %, Zurücksetzung 2026-10-29T13:00:00.000Z',
       '  sevenDay: nichts',
       '',
-      'Über Sitzungen gemerkt (seenWindows.v1, Balken bis 7 Tage nach der letzten Meldung):',
+      'Über Sitzungen gemerkt (seenWindows.v1, Balken bis 7 Tage nach der letzten Meldung, nach der Zurücksetzung nur, solange es gemeldet wird):',
       '  fiveHour: 23 %, zuletzt gemeldet 2026-10-29T10:00:00.000Z, Zurücksetzung 2026-10-29T13:00:00.000Z',
       '  sevenDay: nichts',
     ].join('\n'),

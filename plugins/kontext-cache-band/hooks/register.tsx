@@ -198,11 +198,14 @@ async function storeInfo($: EngineInterface, usage: SessionUsage) {
   await update($, info, () => next)
 }
 
-// Nutzungsfenster über Sitzungen merken: Nicht jeder Plan hat jedes Fenster (der große
-// Max-Plan hat kein 5-Stunden-Limit), und vor der ersten Antwort einer Sitzung oder kurz
+// Nutzungsfenster über Sitzungen merken: Nicht jeder Plan hat jedes Fenster (ein verifiziertes
+// Ultra-Konto hat kein 5-Stunden-Limit), und vor der ersten Antwort einer Sitzung oder kurz
 // nach einer Zurücksetzung meldet Claude Code ein vorhandenes Fenster nicht. Ein Fenster
 // bekommt einen Balken, solange es in den letzten 7 Tagen gemeldet wurde; fehlt es gerade,
 // gilt der gemerkte Stand (nach dessen Zurücksetzung 0 %, siehe windowView).
+// Ausnahme: Ist die gemerkte Zurücksetzung vorbei und kommt eine Meldung mit anderen Fenstern,
+// in der es fehlt, gibt es das Fenster nicht mehr (etwa nach einem Planwechsel zu Ultra ohne
+// 5-Stunden-Limit): kein Balken mehr, und es wird vergessen.
 const SEEN_KEY = 'seenWindows.v1'
 const SEEN_FOR = 7 * 24 * HOUR
 type Windows = { fiveHour?: UsageWindow; sevenDay?: UsageWindow }
@@ -213,16 +216,23 @@ async function rememberWindows($: EngineInterface, reported: Windows): Promise<W
   try {
     const stored = ((await $.store.get(SEEN_KEY)) ?? {}) as SeenWindows
     const changed: SeenWindows = {}
+    const gone: Array<keyof SeenWindows> = []
+    const hasReport = reported.fiveHour !== undefined || reported.sevenDay !== undefined
     for (const key of ['fiveHour', 'sevenDay'] as const) {
       const w = reported[key]
       const old = stored[key]
+      if (w === undefined) {
+        // Nach der Zurücksetzung in einer echten Meldung nicht mehr dabei: das Fenster gibt es nicht mehr
+        if (hasReport && old?.resetsAt !== undefined && old.resetsAt <= now) gone.push(key)
+        continue
+      }
       // Nur schreiben, wenn sich etwas geändert hat oder die Meldung über eine Stunde alt ist
-      if (w === undefined) continue
       if (old !== undefined && old.percent === w.percent && old.resetsAt === w.resetsAt && now - old.at < HOUR) continue
       changed[key] = w.resetsAt === undefined ? { at: now, percent: w.percent } : { at: now, percent: w.percent, resetsAt: w.resetsAt }
     }
     seen = { ...stored, ...changed }
-    if (Object.keys(changed).length > 0) await $.store.set(SEEN_KEY, seen)
+    for (const key of gone) delete seen[key]
+    if (Object.keys(changed).length > 0 || gone.length > 0) await $.store.set(SEEN_KEY, seen)
   } catch {
     // Ohne Speicher gelten nur die gerade gemeldeten Fenster
     return reported
@@ -315,7 +325,7 @@ async function runLimitsCommand($: EngineInterface): Promise<string> {
         : `  ${name}: ${w.percent} %, Zurücksetzung ${w.resetsAt === undefined ? 'nicht gemeldet' : new Date(w.resetsAt).toISOString()}${w.isRemembered === true ? ' (gemerkt)' : ''}`,
     )
   }
-  lines.push('', `Über Sitzungen gemerkt (${SEEN_KEY}, Balken bis 7 Tage nach der letzten Meldung):`)
+  lines.push('', `Über Sitzungen gemerkt (${SEEN_KEY}, Balken bis 7 Tage nach der letzten Meldung, nach der Zurücksetzung nur, solange es gemeldet wird):`)
   let seen: SeenWindows | undefined
   try {
     seen = (await $.store.get(SEEN_KEY)) as SeenWindows | undefined

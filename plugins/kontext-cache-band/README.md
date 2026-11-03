@@ -14,7 +14,7 @@ Jeder Balken hat 10 Einheiten zu je 10 %, daneben steht ein kurzer Wert.
 
 Ein `≈` vor einem Wert heißt geschätzt: vor der ersten Antwort, nach `/clear` und nach einer Komprimierung beim Kontext, bei einem fortgesetzten Gespräch beim Cache.
 
-Nicht jeder Plan hat jedes Nutzungsfenster, der große Max-Plan etwa kein 5-Stunden-Limit. Außerdem meldet Claude Code die Fenster erst nach der ersten Antwort einer Sitzung, und ein Fenster fällt kurz weg, sobald seine Zurücksetzung vorbei ist. Deshalb merkt sich der Mod jedes gemeldete Fenster über Sitzungen hinweg. Ein Fenster bekommt einen Balken, solange es in den letzten 7 Tagen gemeldet wurde. Fehlt es gerade, gilt der gemerkte Stand, nach dessen Zurücksetzung 0 %. Ein Fenster, das nie gemeldet wurde, bekommt keinen Balken.
+Nicht jeder Plan hat jedes Nutzungsfenster, ein verifiziertes Ultra-Konto etwa kein 5-Stunden-Limit. Außerdem meldet Claude Code die Fenster erst nach der ersten Antwort einer Sitzung, und ein Fenster fällt kurz weg, sobald seine Zurücksetzung vorbei ist. Deshalb merkt sich der Mod jedes gemeldete Fenster über Sitzungen hinweg. Ein Fenster bekommt einen Balken, solange es in den letzten 7 Tagen gemeldet wurde. Fehlt es gerade, gilt der gemerkte Stand, nach dessen Zurücksetzung 0 %. Ist die Zurücksetzung vorbei und fehlt das Fenster in einer Meldung, die andere Fenster enthält, gibt es das Fenster nicht mehr, etwa nach einem Wechsel zum Ultra-Plan ohne 5-Stunden-Limit. Dann verschwindet sein Balken, und der Mod vergisst es. Ein Fenster, das nie gemeldet wurde, bekommt keinen Balken.
 
 Zur Prüfung gibt `/kontext-cache-band-limits` die Nutzungsfenster unverändert aus, wie Claude Code sie gerade meldet, dazu was der Mod zuletzt gespeichert und über Sitzungen gemerkt hat.
 
