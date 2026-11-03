@@ -816,6 +816,8 @@ test('Backlog: ohne Backlog legt ＋ eines im Format von Backlog.md an, mit conf
   expect(files[`${BL}/config.yml`]).toContain('statuses: ["To Do", "In Progress", "Done"]')
   const made = files[`${BL}/tasks/task-1 - Release-bauen.md`] ?? ''
   expect(made).toContain('id: TASK-1\ntitle: Release bauen\nstatus: To Do')
+  // Zeit wie das CLI von Backlog.md: ISO in UTC
+  expect(made).toContain("created_date: '2026-11-02T10:00:00Z'")
   expect(made).toContain('<!-- SECTION:DESCRIPTION:BEGIN -->\nVorher testen.\n<!-- SECTION:DESCRIPTION:END -->')
   // Done bleibt in tasks/, nur der Status wechselt
   await ui.press({ key: 'task-toggle-tasks/task-1 - Release-bauen.md' })

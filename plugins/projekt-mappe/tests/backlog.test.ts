@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { configYaml, DEFAULT_CONFIG, newTask, nextNumber, parseConfig, setScalar, statusChange, taskOf } from '../hooks/backlog'
 
-const NOW = { date: '2026-11-03', minute: '2026-11-03 10:15' }
+const NOW = { date: '2026-11-03', minute: '2026-11-03T09:15:00Z' }
 
 // Gekürzt aus MrLesk/Backlog.md, backlog/tasks/back-798 - …md
 const BACKLOG_MD = [
@@ -76,7 +76,7 @@ test('setScalar ändert nur die eine Zeile und behält die Quotierung', async ()
   expect(after.length).toBe(before.length)
   expect(after.filter((l, i) => l !== before[i])).toEqual(['status: Done'])
   // Gequotet bleibt gequotet
-  expect(setScalar(BACKLOG_MD, 'created_date', '2026-11-03 10:15')).toContain("created_date: '2026-11-03 10:15'")
+  expect(setScalar(BACKLOG_MD, 'created_date', '2026-11-03T09:15:00Z')).toContain("created_date: '2026-11-03T09:15:00Z'")
   // Fehlt der Schlüssel, kommt er vor das schließende ---
   expect(setScalar(AIDA, 'erledigt', '2026-11-03')).toBe(AIDA.replace('geaendert: 2026-08-31\n---', 'geaendert: 2026-08-31\nerledigt: 2026-11-03\n---'))
 })
@@ -96,7 +96,7 @@ test('Backlog.md Done: nur Status und updated_date, die Datei bleibt in tasks/',
   const task = taskOf('tasks/back-798 - Correct.md', BACKLOG_MD, config)
   const changed = statusChange(task, BACKLOG_MD, 'Done', config, NOW)
   expect(changed.moveTo).toBeUndefined()
-  expect(changed.text).toBe(BACKLOG_MD.replace('status: In Progress', 'status: Done').replace('priority: high\n---', "priority: high\nupdated_date: '2026-11-03 10:15'\n---"))
+  expect(changed.text).toBe(BACKLOG_MD.replace('status: In Progress', 'status: Done').replace('priority: high\n---', "priority: high\nupdated_date: '2026-11-03T09:15:00Z'\n---"))
 })
 
 test('Neue Aufgabe im Format von Backlog.md, Nummer über alle Ordner', async () => {
@@ -115,7 +115,7 @@ test('Neue Aufgabe im Format von Backlog.md, Nummer über alle Ordner', async ()
       "title: 'Release: bauen & prüfen'",
       'status: To Do',
       'assignee: []',
-      "created_date: '2026-11-03 10:15'",
+      "created_date: '2026-11-03T09:15:00Z'",
       'labels: []',
       'dependencies: []',
       '---',

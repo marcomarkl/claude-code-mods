@@ -377,12 +377,13 @@ const readText = ($: EngineInterface, path: string) =>
     () => undefined,
   )
 
-// Datum und Minute in Ortszeit, wie Backlog.md sie schreibt (yyyy-mm-dd hh:mm)
+// Das Datum in Ortszeit (Marcos Ordner-Form, Changelog) und die Minute als ISO in UTC, wie das
+// CLI von Backlog.md created_date und updated_date schreibt ('2026-11-03T14:06:00Z')
 async function nowParts($: EngineInterface) {
   const d = new Date(await $.clock.now())
   const pad = (n: number) => String(n).padStart(2, '0')
   const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  return { date, minute: `${date} ${pad(d.getHours())}:${pad(d.getMinutes())}` }
+  return { date, minute: `${d.toISOString().slice(0, 16)}:00Z` }
 }
 
 async function readConfig($: EngineInterface, p: Paths): Promise<{ config: Config; hasConfig: boolean }> {
