@@ -56,6 +56,8 @@ export type Draft =
   | { kind: 'entry' }
   | { kind: 'entry-edit'; index: number }
   | { kind: 'release' }
+  /** Lizenz wählen */
+  | { kind: 'license' }
 
 /** Reiter im Projekt. Global gibt es nur die ToDo-Liste. */
 export type Section = 'todo' | 'backlog' | 'changelog' | 'doku'
@@ -105,6 +107,27 @@ export type ChangelogState = {
   version?: string
 }
 
+/** Eine Datei im Reiter Doku. */
+export type DocFile = {
+  /** Pfad relativ zum Projekt-Root. */
+  path: string
+  label: string
+  group: 'Projekt' | 'Entscheidungen' | 'Pläne'
+}
+
+/** Eine fehlende Best-Practice-Datei mit festem Gerüst. */
+export type Missing = 'changelog' | 'backlog' | 'license' | 'decisions'
+
+/** Der Reiter Doku, wie zuletzt gelesen. */
+export type DocsState = {
+  files: DocFile[]
+  missing: Missing[]
+  hasClaudeMd: boolean
+}
+
+/** Die geöffnete Doku-Datei. */
+export type OpenDoc = { path: string; text: string }
+
 /** Das Backlog des Projekts, wie zuletzt gelesen. */
 export type BacklogState = {
   style: Style
@@ -133,6 +156,8 @@ declare module 'claude-code' {
       section: Shaped<Section>
       backlog: Shaped<BacklogState | null>
       changelog: Shaped<ChangelogState | null>
+      docs: Shaped<DocsState | null>
+      doc: Shaped<OpenDoc | null>
       /** Datei der aufgeklappten Aufgabe bzw. der geöffneten Doku-Datei */
       opened: Shaped<string | null>
       /** Letzte Meldung im Pane, etwa ein gescheitertes Verschieben */

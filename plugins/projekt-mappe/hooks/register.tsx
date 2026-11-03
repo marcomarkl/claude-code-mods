@@ -4,7 +4,9 @@ import type { EngineInterface, Register } from 'claude-code'
 import type {
   BacklogState,
   ChangelogState,
+  DocsState,
   Draft,
+  Missing,
   ListState,
   Lists,
   Paths,
@@ -14,8 +16,11 @@ import type {
   TodoItem,
   UiState,
 } from '../types'
+import { decisionFirst, decisionTemplate, DECISION_DIRS, docFilesOf, LICENSES, licenseText, missingOf } from './scaffold'
+import type { Present } from './scaffold'
 import {
   addEntry,
+  changelogTemplate,
   CATEGORIES,
   CATEGORY_LABEL,
   editEntry,
@@ -95,12 +100,15 @@ const backlog = atom({ plugin: 'projekt-mappe', key: 'backlog' } as const, null,
 const opened = atom({ plugin: 'projekt-mappe', key: 'opened' } as const, null, { shape: 'v1' })
 const notice = atom({ plugin: 'projekt-mappe', key: 'notice' } as const, null, { shape: 'v1' })
 const changelog = atom({ plugin: 'projekt-mappe', key: 'changelog' } as const, null, { shape: 'v1' })
+const docs = atom({ plugin: 'projekt-mappe', key: 'docs' } as const, null, { shape: 'v1' })
+const doc = atom({ plugin: 'projekt-mappe', key: 'doc' } as const, null, { shape: 'v1' })
 
 // Die Reiter im Projekt, in dieser Reihenfolge
 const SECTIONS: ReadonlyArray<{ id: Section; label: string }> = [
   { id: 'todo', label: 'ToDo' },
   { id: 'backlog', label: 'Backlog' },
   { id: 'changelog', label: 'Changelog' },
+  { id: 'doku', label: 'Doku' },
 ]
 
 // ---- Dateien ---------------------------------------------------------------
@@ -341,6 +349,7 @@ async function setSection($: EngineInterface, next: Section) {
   await update($, draft, () => null)
   await update($, opened, () => null)
   await update($, notice, () => null)
+  await update($, doc, () => null)
   await saveUi($)
   await refreshSection($)
 }
@@ -351,6 +360,7 @@ async function refreshSection($: EngineInterface) {
   const current = await read($, section)
   if (current === 'backlog') await refreshBacklog($)
   if (current === 'changelog') await refreshChangelog($)
+  if (current === 'doku') await refreshDocs($)
 }
 
 // ---- Backlog --------------------------------------------------------------------
@@ -567,6 +577,76 @@ async function changeChangelog($: EngineInterface, fn: (raw: string, date: strin
 
 // Die Kategorie, die das Eingabefeld für einen neuen Eintrag gerade gewählt hat
 let entryCategory: string = CATEGORIES[0]
+
+// ---- Doku und Vollständigkeit ------------------------------------------------------
+
+const names = async ($: EngineInterface, dir: string, kind?: 'file' | 'dir') =>
+  (await $.fs.list(dir).catch(() => [])).filter(e => kind === undefined || e.kind === kind).map(e => e.name)
+
+// Nur Namen lesen; den Inhalt erst beim Öffnen
+async function readDocs($: EngineInterface): Promise<DocsState> {
+  const p = await currentPaths($)
+  const decisions: Record<string, string[]> = {}
+  for (const dir of DECISION_DIRS) decisions[dir] = await names($, `${p.root}/${dir}`, 'file')
+  // plans/*.md und plans/<Ordner>/*.md
+  const plans: string[] = (await names($, `${p.root}/plans`, 'file')).filter(n => n.endsWith('.md'))
+  for (const sub of await names($, `${p.root}/plans`, 'dir')) {
+    for (const n of await names($, `${p.root}/plans/${sub}`, 'file')) if (n.endsWith('.md')) plans.push(`${sub}/${n}`)
+  }
+  const present: Present = {
+    root: await names($, p.root),
+    backlog: await names($, `${p.root}/backlog`),
+    decisions,
+    plans,
+  }
+  return { files: docFilesOf(present), missing: missingOf(present), hasClaudeMd: present.root.includes('CLAUDE.md') }
+}
+
+async function refreshDocs($: EngineInterface) {
+  const next = await readDocs($)
+  if (JSON.stringify(await read($, docs)) !== JSON.stringify(next)) await update($, docs, () => next)
+}
+
+// Eine Doku-Datei öffnen oder, wenn sie schon offen ist, wieder schließen
+async function toggleDoc($: EngineInterface, path: string) {
+  const shown = await read($, doc)
+  if (shown?.path === path) {
+    await update($, doc, () => null)
+    return
+  }
+  const p = await currentPaths($)
+  const text = await readText($, `${p.root}/${path}`)
+  await update($, doc, () => ({ path, text: text ?? `*Nicht lesbar: ${path}*` }))
+}
+
+// Ein festes Gerüst anlegen; vorhandene Dateien bleiben unberührt
+async function createMissing($: EngineInterface, what: Missing, licenseId?: string): Promise<string | undefined> {
+  const p = await currentPaths($)
+  const writeNew = async (path: string, text: string) => {
+    if (await $.fs.exists(path).catch(() => false)) return
+    await $.fs.write(path, text)
+  }
+  const { date } = await nowParts($)
+  if (what === 'changelog') await writeNew(`${p.root}/CHANGELOG.md`, changelogTemplate())
+  if (what === 'backlog') {
+    await writeNew(`${backlogDir(p)}/config.yml`, configYaml(p.root.slice(p.root.lastIndexOf('/') + 1)))
+    await $.process.run(['mkdir', '-p', `${backlogDir(p)}/tasks`], { cwd: p.root, timeoutMs: 5_000 }).catch(() => undefined)
+  }
+  if (what === 'decisions') {
+    await writeNew(`${p.root}/docs/decisions/0001-record-architecture-decisions.md`, decisionFirst(date))
+    await writeNew(`${p.root}/docs/decisions/template.md`, decisionTemplate())
+  }
+  if (what === 'license') {
+    const id = licenseId ?? 'MIT'
+    const spdx = id === 'proprietary' ? undefined : await readText($, `${$.plugin.root}/licenses/${id}.txt`)
+    const user = await $.process.run(['git', 'config', 'user.name'], { cwd: p.root, timeoutMs: 5_000 }).catch(() => undefined)
+    const text = licenseText(id, spdx, date.slice(0, 4), user?.exitCode === 0 ? user.stdout.trim() : '')
+    if (text === undefined) return `Lizenztext fehlt im Mod: licenses/${id}.txt`
+    await writeNew(`${p.root}/LICENSE`, text)
+  }
+  await refreshDocs($)
+  return undefined
+}
 
 // ---- Werkzeug für Claude -------------------------------------------------------
 
@@ -1188,6 +1268,90 @@ export const register: Register = on => {
       )
     }
 
+    // ---- Reiter Doku ----
+    const docsView = async () => {
+      const state = await read($, docs)
+      const shown = await read($, doc)
+      const message = await read($, notice)
+      const files = state?.files ?? []
+      const groups = ['Projekt', 'Entscheidungen', 'Pläne'] as const
+      const label: Record<Missing, string> = {
+        changelog: 'CHANGELOG.md nach Keep a Changelog',
+        backlog: 'backlog/ nach Backlog.md',
+        license: 'LICENSE',
+        decisions: 'docs/decisions/ mit erster ADR',
+      }
+      const fail = (failed: string | undefined) => (failed === undefined ? undefined : update($, notice, () => failed))
+      return (
+        <Box flexDirection="column" rowGap={1}>
+          {header(null)}
+          {warning(message)}
+          {groups.map(g => {
+            const inGroup = files.filter(f => f.group === g)
+            return inGroup.length === 0 ? null : (
+              <Box flexDirection="column">
+                <Text bold>{g}</Text>
+                {inGroup.map(f => (
+                  <Box flexDirection="column">
+                    <Button
+                      key={`doc-open-${f.path}`}
+                      plain
+                      label={f.label}
+                      {...(shown?.path === f.path ? { variant: 'primary' as const } : {})}
+                      onPress={() => void toggleDoc($, f.path)}
+                    />
+                    {shown?.path === f.path ? <Markdown key={`doc-view-${f.path}`} text={clip(shown.text)} /> : null}
+                  </Box>
+                ))}
+              </Box>
+            )
+          })}
+          {state !== null && !state.hasClaudeMd ? <Text dimColor>Keine CLAUDE.md: Claude Codes /init legt eine an.</Text> : null}
+          {(state?.missing.length ?? 0) === 0 ? null : (
+            <Box flexDirection="column">
+              <Text bold>Fehlt</Text>
+              {(state?.missing ?? []).map(m =>
+                isMobile ? (
+                  <Text dimColor>{label[m]}</Text>
+                ) : m === 'license' && editing?.kind === 'license' ? (
+                  <Box flexDirection="row" columnGap={1}>
+                    <Text>LICENSE:</Text>
+                    {LICENSES.map(x => (
+                      <Button
+                        key={`license-${x.id}`}
+                        label={x.label}
+                        onPress={() =>
+                          void createMissing($, 'license', x.id).then(async failed => {
+                            await fail(failed)
+                            await update($, draft, () => null)
+                          })
+                        }
+                      />
+                    ))}
+                    {cancel('license-cancel', 'create-license')}
+                  </Box>
+                ) : (
+                  <Box flexDirection="row" columnGap={1}>
+                    <Button
+                      key={`create-${m}`}
+                      plain
+                      label={`${ICON.add} ${label[m]}`}
+                      onPress={() =>
+                        void (m === 'license'
+                          ? update($, draft, (): Draft => ({ kind: 'license' }))
+                          : createMissing($, m).then(fail))
+                      }
+                    />
+                  </Box>
+                ),
+              )}
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
+    if (current === 'doku') return docsView()
     if (current === 'backlog') return backlogView()
     if (current === 'changelog') return changelogView()
     return todoView()

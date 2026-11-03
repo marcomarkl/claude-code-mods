@@ -83,6 +83,7 @@ function engine(on: On, setup: Setup = {}) {
     const argv = [...e.argv]
     runs.push(argv)
     if (argv[0] === 'mkdir') return { value: ok }
+    if (argv[0] === 'git' && argv[1] === 'config') return { value: { ...ok, stdout: 'Marco Markl\n' } }
     // git mv -- von nach / mv -- von nach: die Datei im Speicher umziehen
     if ((argv[0] === 'git' && argv[1] === 'mv') || argv[0] === 'mv') {
       const [from = '', to = ''] = argv.slice(argv.indexOf('--') + 1)
@@ -113,11 +114,15 @@ function engine(on: On, setup: Setup = {}) {
   // Die Dateien direkt unter einem Ordner
   on('fs.list', (_, e) => {
     const prefix = `${e.path}/`
-    const names = Object.keys(files)
-      .filter(f => f.startsWith(prefix) && !f.slice(prefix.length).includes('/'))
-      .map(f => ({ name: f.slice(prefix.length), kind: 'file' as const, size: 0, mtimeMs: NOW }))
-    if (names.length === 0) throw new Error(`ENOENT: ${e.path}`)
-    return { value: names }
+    const seen = new Map<string, 'file' | 'dir'>()
+    for (const f of Object.keys(files)) {
+      if (!f.startsWith(prefix)) continue
+      const rest = f.slice(prefix.length)
+      const slash = rest.indexOf('/')
+      seen.set(slash < 0 ? rest : rest.slice(0, slash), slash < 0 ? 'file' : 'dir')
+    }
+    if (seen.size === 0) throw new Error(`ENOENT: ${e.path}`)
+    return { value: [...seen].map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: kind === 'file' ? NOW : 0 })) }
   })
   on('fs.stat', (_, e) => {
     const kind = setup.dirs?.[e.path] ?? (files[e.path] === undefined ? undefined : 'file')
@@ -910,5 +915,69 @@ test('Changelog: Eintrag unter [Unreleased] ändern und löschen', async ($, on)
   expect(files[`${REPO}/CHANGELOG.md`]).toBe(keep.replace('- Alt', '- Neu'))
   await ui.press({ key: 'entry-remove-0' })
   expect(files[`${REPO}/CHANGELOG.md`]).toBe('# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n')
+  await ui.unmount()
+})
+
+// ---- Doku und Vollständigkeit ----------------------------------------------------
+
+const openDocs = async ($: Engine) => {
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'section-doku' })
+  return ui
+}
+
+test('Doku: README, CLAUDE.md, Entscheidungen und Pläne; Öffnen zeigt die Datei gerendert', async ($, on) => {
+  engine(on, {
+    files: {
+      [`${REPO}/README.md`]: '# App\n\nWas sie tut.\n',
+      [`${REPO}/CLAUDE.md`]: '# Regeln\n',
+      [`${REPO}/docs/adr/0001-postgres.md`]: '# 1. Postgres\n',
+      [`${REPO}/backlog/decisions/decision-1 - Tailwind.md`]: '# Tailwind\n',
+      [`${REPO}/plans/2026-11-01-umbau.md`]: '# Umbau\n',
+      [`${REPO}/plans/seo/plan.md`]: '# SEO\n',
+    },
+  })
+  await start($)
+  const ui = await openDocs($)
+  const labels = (await ui.findAll({ type: 'Button' })).map(b => String(b.props.label)).filter(l => !/^(🌐|📁|ToDo|Backlog|Changelog|Doku|＋)/.test(l))
+  expect(labels).toEqual(['README.md', 'CLAUDE.md', '0001-postgres', 'decision-1 - Tailwind', 'seo/plan', '2026-11-01-umbau'])
+  await ui.press({ key: 'doc-open-README.md' })
+  expect((await ui.find({ type: 'Markdown', key: 'doc-view-README.md' }))?.props.text).toBe('# App\n\nWas sie tut.\n')
+  // Kein Changelog, kein Backlog, keine Lizenz; Entscheidungen gibt es
+  expect((await texts(ui)).includes('Fehlt')).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'create-changelog' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'create-decisions' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Doku: BACKLOG.md und CHANGES.md zählen als vorhanden', async ($, on) => {
+  engine(on, { files: { [`${REPO}/BACKLOG.md`]: '# B\n', [`${REPO}/CHANGES.md`]: '# C\n', [`${REPO}/LICENSE`]: 'MIT\n' } })
+  await start($)
+  const ui = await openDocs($)
+  expect(await ui.find({ type: 'Button', key: 'create-backlog' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'create-changelog' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'create-license' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Keine CLAUDE.md/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Doku: fehlende Gerüste anlegen, vorhandene Dateien bleiben', async ($, on) => {
+  engine(on, { files: { [`${REPO}/README.md`]: '# App\n' } })
+  await start($)
+  const ui = await openDocs($)
+  await ui.press({ key: 'create-changelog' })
+  expect(files[`${REPO}/CHANGELOG.md`]).toContain('## [Unreleased]')
+  await ui.press({ key: 'create-backlog' })
+  expect(files[`${REPO}/backlog/config.yml`]).toContain('task_prefix: "task"')
+  expect(runs.some(r => r[0] === 'mkdir' && r.at(-1) === `${REPO}/backlog/tasks`)).toBe(true)
+  await ui.press({ key: 'create-decisions' })
+  expect(files[`${REPO}/docs/decisions/0001-record-architecture-decisions.md`]).toContain('## Kontext')
+  expect(files[`${REPO}/docs/decisions/template.md`]).toContain('## Folgen')
+  // Lizenz: erst die Auswahl, „Alle Rechte vorbehalten“ braucht keinen Lizenztext
+  await ui.press({ key: 'create-license' })
+  await ui.press({ key: 'license-proprietary' })
+  expect(files[`${REPO}/LICENSE`]).toBe('Copyright (c) 2026 Marco Markl. Alle Rechte vorbehalten.\n')
+  expect(await ui.find({ type: 'Text', text: 'Fehlt' })).toBeUndefined()
+  expect(files[`${REPO}/README.md`]).toBe('# App\n')
   await ui.unmount()
 })
