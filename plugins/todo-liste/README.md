@@ -34,16 +34,23 @@ In der mobilen App gibt es kein Eingabefeld. Dort lassen sich Einträge nur abha
 
 ## Speicherorte
 
-- **Global:** `~/.claude/todo-liste/global.json`, bzw. unter `CLAUDE_CONFIG_DIR`, wenn gesetzt.
-- **Projekt:** `.claude/todos.json` im Projektordner. Der Mod trägt die Datei in `.git/info/exclude` ein. Sie landet so in keinem Commit, und die `.gitignore` des Projekts bleibt unverändert. Läuft die Sitzung in einem Git-Worktree, gilt die Liste des ursprünglichen Projektordners: alle Worktrees eines Repos teilen sich eine Liste. Ohne Git-Repo gilt der Ordner, in dem die Sitzung läuft.
+- **Global:** `~/.claude/todo-liste/TODO.md`, bzw. unter `CLAUDE_CONFIG_DIR`, wenn gesetzt.
+- **Projekt:** `TODO.md` im Projektordner. Der Mod trägt `/TODO.md` in `.git/info/exclude` ein. Die Datei landet so in keinem Commit, und die `.gitignore` des Projekts bleibt unverändert. Läuft die Sitzung in einem Git-Worktree, gilt die Liste des ursprünglichen Projektordners: alle Worktrees eines Repos teilen sich eine Liste. Ohne Git-Repo gilt der Ordner, in dem die Sitzung läuft.
 
-Beide Dateien sind JSON:
+Beide Dateien folgen dem Format [todo-md](https://github.com/todo-md/todo-md): der Kopf `# TODO`, darunter eine Liste, offene zuerst, erledigte am Ende. Folgezeilen mehrzeiliger Einträge stehen zwei Leerzeichen eingerückt:
 
-```json
-{ "version": 1, "items": [{ "id": "…", "text": "Release bauen", "done": false, "createdAt": 1793613600000 }] }
+```markdown
+# TODO
+
+- [ ] Release bauen
+- [ ] Doku nachziehen
+  mit Beispielen
+- [x] Tests
 ```
 
-Mehrere Sitzungen können dieselbe Liste bearbeiten. Jede Änderung liest die Datei vorher neu, die letzte gewinnt. Änderungen aus anderen Sitzungen erscheinen nach spätestens 10 Sekunden. Ist eine Datei kein gültiges JSON mehr, überschreibt der Mod sie nicht. Die Liste zeigt dann `⚠` mit dem Pfad und ist gesperrt, bis die Datei repariert ist.
+Die Datei gehört dem Mod. Er schreibt sie bei jeder Änderung neu. Von Hand bearbeiten geht, solange sie aus diesen Zeilen besteht; `*` oder `+` als Aufzählung und `[X]` liest er mit und schreibt sie als `- [ ]`/`- [x]` zurück. Eine `TODO.md` mit anderem Inhalt, etwa mit Abschnitten, Fließtext oder Tabellen, überschreibt der Mod nicht. Die Liste zeigt dann `⚠` mit dem Pfad und ist gesperrt, bis die Datei wieder dem Format entspricht.
+
+Mehrere Sitzungen können dieselbe Liste bearbeiten. Jede Änderung liest die Datei vorher neu, die letzte gewinnt. Änderungen aus anderen Sitzungen erscheinen nach spätestens 10 Sekunden. Ändert eine andere Sitzung den Text eines Eintrags, den man gerade bearbeitet, schließt sich das Eingabefeld, und das Getippte geht verloren.
 
 ## Claude und die Liste
 
@@ -55,7 +62,7 @@ Claude bekommt ein Werkzeug `todos` und kann damit die Listen lesen und bearbeit
 - „schieb ‚Doku‘ nach oben“
 - „lösch die erledigten im Projekt“
 
-Ohne Angabe legt Claude im Projekt an, auf Wunsch auch global. Beim Ändern trifft Claude einen Eintrag über seine Kennung, die das Lesen der Liste mitliefert. Löschen lässt sich nicht rückgängig machen, wie im Pane. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
+Ohne Angabe legt Claude im Projekt an, auf Wunsch auch global. Beim Ändern trifft Claude einen Eintrag über seine Kennung, die das Lesen der Liste mitliefert. Die Kennung steht nicht in der Datei, der Mod bildet sie beim Lesen aus dem Text; nach einer Textänderung hat ein Eintrag deshalb eine neue. Löschen lässt sich nicht rückgängig machen, wie im Pane. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
 
 ## Installieren
 

@@ -1,22 +1,14 @@
-/** Ein Eintrag der ToDo-Liste. */
+/** Ein Eintrag der ToDo-Liste, gelesen aus einer `TODO.md`. */
 export type TodoItem = {
-  /** Feste Kennung, `crypto.randomUUID()`. */
+  /**
+   * Beim Lesen gebildet aus Liste (`p`/`g`), Text und Vorkommen gleicher Texte;
+   * stabil, solange der Text bleibt.
+   */
   id: string
-  /** Einzeiliger Text, höchstens 500 Zeichen. */
+  /** Text, auch mehrzeilig, höchstens 500 Zeichen. */
   text: string
   /** Wahr, wenn abgehakt. */
   done: boolean
-  /** Angelegt, in Millisekunden seit der Epoche. */
-  createdAt: number
-  /** Abgehakt, in Millisekunden seit der Epoche; fehlt bei offenen. */
-  doneAt?: number
-}
-
-/** Inhalt einer Listendatei (`global.json`, `.claude/todos.json`). */
-export type TodoFile = {
-  version: 1
-  /** Offene zuerst, dann erledigte; jeweils in der Reihenfolge der Liste. */
-  items: TodoItem[]
 }
 
 /** Welche Liste: über alle Projekte oder die des aktuellen Projekts. */

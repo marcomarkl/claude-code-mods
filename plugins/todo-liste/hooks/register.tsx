@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Draft, ListState, Lists, Paths, Scope, TodoFile, TodoItem, UiState } from '../types'
+import type { Draft, ListState, Lists, Paths, Scope, TodoItem, UiState } from '../types'
 
 const PANE = 'todo-liste'
 const COMMAND = 'todo-liste'
@@ -10,7 +10,8 @@ const TOOL_ID = 'mcp__todo-liste__todos'
 // Über Sitzungen gemerkt: ob das Pane offen war und welcher Tab
 const UI_KEY = 'ui.v1'
 // Zeile in .git/info/exclude, damit die Projektliste in keinem Commit landet
-const EXCLUDE_LINE = '.claude/todos.json'
+const EXCLUDE_LINE = '/TODO.md'
+const HEADER = '# TODO'
 const MAX_TEXT = 500
 // So oft werden die Dateien neu gelesen, damit Änderungen anderer Sitzungen ankommen
 const REFRESH_MS = 10_000
@@ -47,7 +48,7 @@ const isOpen = atom({ plugin: 'todo-liste', key: 'isOpen' } as const, false, { s
 async function resolvePaths($: EngineInterface): Promise<Paths> {
   const root = await $.session.root()
   const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) ?? ''}/.claude`
-  const global = `${configDir.replace(/\/+$/, '')}/todo-liste/global.json`
+  const global = `${configDir.replace(/\/+$/, '')}/todo-liste/TODO.md`
   try {
     const git = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
       cwd: root,
@@ -56,12 +57,20 @@ async function resolvePaths($: EngineInterface): Promise<Paths> {
     const commonDir = git.stdout.trim()
     if (git.exitCode === 0 && commonDir.endsWith('/.git')) {
       const main = commonDir.slice(0, -'/.git'.length)
-      return { root, global, project: `${main}/.claude/todos.json`, exclude: `${commonDir}/info/exclude` }
+      return { root, global, project: `${main}/TODO.md`, exclude: `${commonDir}/info/exclude` }
     }
   } catch {
     // Kein Git: die Projektwurzel
   }
-  return { root, global, project: `${root}/.claude/todos.json` }
+  // git nicht erreichbar oder kein Repo: ein .git-Ordner im Root ist trotzdem eines, die Liste
+  // bleibt privat. Ein .git als Datei (Worktree) verrät den Haupt-Checkout nicht.
+  const dotGit = await $.fs.stat(`${root}/.git`).catch(() => undefined)
+  return {
+    root,
+    global,
+    project: `${root}/TODO.md`,
+    ...(dotGit?.kind === 'dir' ? { exclude: `${root}/.git/info/exclude` } : {}),
+  }
 }
 
 async function currentPaths($: EngineInterface): Promise<Paths> {
@@ -72,34 +81,86 @@ async function currentPaths($: EngineInterface): Promise<Paths> {
   return found
 }
 
-const isItem = (v: unknown): v is TodoItem => {
-  const i = v as TodoItem
-  return (
-    typeof i === 'object' &&
-    i !== null &&
-    typeof i.id === 'string' &&
-    typeof i.text === 'string' &&
-    typeof i.done === 'boolean' &&
-    typeof i.createdAt === 'number'
-  )
+// ---- TODO.md -------------------------------------------------------------------
+//
+// Format nach todo-md: Kopf "# TODO", darunter eine Liste "- [ ] Text" / "- [x] Text".
+// Folgezeilen mehrzeiliger Einträge stehen zwei Leerzeichen eingerückt. Keine IDs, keine Daten.
+
+type Entry = { text: string; done: boolean }
+
+const TASK = /^[-*+] \[( |x|X)\] (.*)$/
+
+// Die Einträge der Datei; undefined, wenn eine Zeile nicht zum Format gehört (fremde Datei)
+export function parseTodoMd(raw: string): Entry[] | undefined {
+  const lines = raw.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n')
+  const entries: Array<{ lines: string[]; done: boolean }> = []
+  let current: { lines: string[]; done: boolean } | undefined
+  let isStart = true
+  for (const line of lines) {
+    if (line.trim() === '') {
+      current?.lines.push('')
+      continue
+    }
+    if (isStart && line.trimEnd() === HEADER) {
+      isStart = false
+      continue
+    }
+    isStart = false
+    const task = TASK.exec(line)
+    if (task !== null) {
+      current = { lines: [task[2] ?? ''], done: task[1] !== ' ' }
+      entries.push(current)
+    } else if (current !== undefined && line.startsWith('  ')) {
+      current.lines.push(line.slice(2))
+    } else {
+      return undefined
+    }
+  }
+  return entries
+    .map(e => ({ text: cleanText(e.lines.join('\n')), done: e.done }))
+    .filter(e => e.text !== '')
 }
 
-// Eine fehlende Datei ist eine leere Liste. Eine unlesbare wird nie überschrieben:
-// die Liste ist gesperrt, bis die Datei wieder gültig ist.
-async function readList($: EngineInterface, path: string): Promise<ListState> {
+export function formatTodoMd(entries: readonly Entry[]): string {
+  if (entries.length === 0) return `${HEADER}\n`
+  const lines = entries.map(e => {
+    const [first, ...rest] = e.text.split('\n')
+    return [`- [${e.done ? 'x' : ' '}] ${first ?? ''}`, ...rest.map(l => (l === '' ? '' : `  ${l}`))].join('\n')
+  })
+  return `${HEADER}\n\n${lines.join('\n')}\n`
+}
+
+// FNV-1a, 32 Bit: kurz, deterministisch, ohne Abhängigkeit
+const hash = (text: string) => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(36)
+}
+
+// Die id hängt an Liste, Text und Vorkommen gleicher Texte: stabil, solange der Text bleibt
+export const withIds = (entries: readonly Entry[], scope: Scope): TodoItem[] => {
+  const seen = new Map<string, number>()
+  return entries.map(e => {
+    const n = seen.get(e.text) ?? 0
+    seen.set(e.text, n + 1)
+    return { id: `${scope === 'global' ? 'g' : 'p'}${hash(e.text)}-${n}`, text: e.text, done: e.done }
+  })
+}
+
+// Eine fehlende Datei ist eine leere Liste. Eine fremde wird nie überschrieben:
+// die Liste ist gesperrt, bis die Datei wieder dem Format entspricht.
+async function readList($: EngineInterface, path: string, scope: Scope): Promise<ListState> {
   let text: string
   try {
     text = (await $.fs.read(path)) as string
   } catch {
     return { items: [] }
   }
-  try {
-    const data = JSON.parse(text) as Partial<TodoFile>
-    if (data.version === 1 && Array.isArray(data.items) && data.items.every(isItem)) return { items: data.items }
-  } catch {
-    // unten: gesperrt
-  }
-  return { items: [], error: path }
+  const entries = parseTodoMd(text)
+  return entries === undefined ? { items: [], error: path } : { items: withIds(entries, scope) }
 }
 
 // Offene vor erledigten, die Reihenfolge innerhalb bleibt
@@ -124,9 +185,14 @@ const INPUT_ROWS = 3
 // Beide Listen neu lesen; Schalter, Tabs und Pane lesen nur diesen Zwischenspeicher
 async function refresh($: EngineInterface) {
   const p = await currentPaths($)
-  const next: Lists = { global: await readList($, p.global), project: await readList($, p.project) }
+  const next: Lists = { global: await readList($, p.global, 'global'), project: await readList($, p.project, 'project') }
   // Nur bei einer Änderung schreiben: jedes Schreiben zeichnet Schalter und Pane neu
   if (JSON.stringify(await read($, lists)) !== JSON.stringify(next)) await update($, lists, () => next)
+  // Hat eine andere Sitzung den Text des bearbeiteten Eintrags geändert, gibt es seine id nicht mehr
+  const editing = await read($, draft)
+  if (editing?.kind === 'edit' && !next[editing.scope].items.some(i => i.id === editing.id)) {
+    await update($, draft, () => null)
+  }
 }
 
 let excludeChecked = ''
@@ -151,52 +217,63 @@ async function ensureExcluded($: EngineInterface, exclude: string) {
 }
 
 // Lesen, ändern, schreiben: jede Aktion wirkt auf den aktuellen Dateistand, damit sich
-// mehrere Sitzungen nicht gegenseitig zurücksetzen. Falsch, wenn die Liste gesperrt ist.
-async function change($: EngineInterface, scope: Scope, fn: (items: TodoItem[]) => TodoItem[]): Promise<boolean> {
+// mehrere Sitzungen nicht gegenseitig zurücksetzen. Liefert den geschriebenen Stand mit
+// seinen ids; undefined, wenn die Liste gesperrt ist.
+async function change(
+  $: EngineInterface,
+  scope: Scope,
+  fn: (items: TodoItem[]) => TodoItem[],
+): Promise<TodoItem[] | undefined> {
   const p = await currentPaths($)
-  const current = await readList($, p[scope])
+  const current = await readList($, p[scope], scope)
   if (current.error !== undefined) {
     await refresh($)
-    return false
+    return undefined
   }
-  const file: TodoFile = { version: 1, items: ordered(fn(current.items)) }
-  await $.fs.write(p[scope], `${JSON.stringify(file, null, 2)}\n`)
+  const entries: Entry[] = ordered(fn(current.items)).map(i => ({ text: i.text, done: i.done }))
+  await $.fs.write(p[scope], formatTodoMd(entries))
   if (scope === 'project' && p.exclude !== undefined) await ensureExcluded($, p.exclude)
   await refresh($)
-  return true
+  return withIds(entries, scope)
 }
 
 // ---- Aktionen ----------------------------------------------------------------
 
-// Neu am Ende der offenen
+// Neu am Ende der offenen; bei gleichem Text ist der neue der letzte offene mit diesem Text
 async function addItem($: EngineInterface, scope: Scope, raw: string): Promise<TodoItem | undefined> {
   const text = cleanText(raw)
   if (text === '') return undefined
-  const item: TodoItem = { id: crypto.randomUUID(), text, done: false, createdAt: await $.clock.now() }
-  return (await change($, scope, items => [...items, item])) ? item : undefined
+  const written = await change($, scope, items => [...items, { id: '', text, done: false }])
+  const same = written?.filter(i => !i.done && i.text === text) ?? []
+  return same[same.length - 1]
 }
 
-async function editItem($: EngineInterface, scope: Scope, id: string, raw: string): Promise<boolean> {
+// Liefert die neue id: sie hängt am Text. Undefined bei leerem Text oder gesperrter Liste.
+async function editItem($: EngineInterface, scope: Scope, id: string, raw: string): Promise<string | undefined> {
   const text = cleanText(raw)
-  if (text === '') return false
-  return change($, scope, items => items.map(i => (i.id === id ? { ...i, text } : i)))
+  if (text === '') return undefined
+  let at = -1
+  const written = await change($, scope, items => {
+    const edited = items.map(i => (i.id === id ? { ...i, text } : i))
+    at = ordered(edited).findIndex(i => i.id === id)
+    return edited
+  })
+  return written?.[at]?.id
 }
 
 // Abhaken rutscht ans Ende der erledigten, wieder öffnen ans Ende der offenen
 async function toggleItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
-  const now = await $.clock.now()
-  return change($, scope, items => {
+  const written = await change($, scope, items => {
     const item = items.find(i => i.id === id)
     if (item === undefined) return items
-    const { doneAt: _, ...open } = item
-    const flipped: TodoItem = item.done ? { ...open, done: false } : { ...item, done: true, doneAt: now }
-    return [...items.filter(i => i.id !== id), flipped]
+    return [...items.filter(i => i.id !== id), { ...item, done: !item.done }]
   })
+  return written !== undefined
 }
 
 // Innerhalb der offenen eine Stelle nach oben oder unten
 async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1): Promise<boolean> {
-  return change($, scope, items => {
+  const written = await change($, scope, items => {
     const open = items.filter(i => !i.done)
     const at = open.findIndex(i => i.id === id)
     const to = at + by
@@ -208,14 +285,15 @@ async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1
     open[to] = a
     return [...open, ...items.filter(i => i.done)]
   })
+  return written !== undefined
 }
 
 async function removeItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
-  return change($, scope, items => items.filter(i => i.id !== id))
+  return (await change($, scope, items => items.filter(i => i.id !== id))) !== undefined
 }
 
 async function clearDone($: EngineInterface, scope: Scope): Promise<boolean> {
-  return change($, scope, items => items.filter(i => !i.done))
+  return (await change($, scope, items => items.filter(i => !i.done))) !== undefined
 }
 
 // ---- Pane und Zustand --------------------------------------------------------
@@ -325,8 +403,9 @@ async function runTool($: EngineInterface, input: ToolInput): Promise<ToolAnswer
     case 'edit': {
       const text = typeof input.text === 'string' ? cleanText(input.text) : ''
       if (text === '') return { deny: 'Leerer Text: nichts geändert.' }
-      if (!(await editItem($, scope, item.id, text))) return { deny: LOCKED }
-      return { result: `Geändert: ${item.text} → ${text}` }
+      const newId = await editItem($, scope, item.id, text)
+      if (newId === undefined) return { deny: LOCKED }
+      return { result: `Geändert: ${item.text} → ${text} (neue id: ${newId})` }
     }
     case 'done':
     case 'reopen': {
@@ -376,6 +455,7 @@ export const register: Register = on => {
           'Mit der id aus "list": "edit" ändert den Text (text), "done" hakt ab, "reopen" öffnet wieder, ' +
           '"move" verschiebt einen offenen Eintrag um eine Stelle (direction "up" oder "down"), "remove" löscht. ' +
           '"clear_done" entfernt alle erledigten Einträge einer Liste (scope, Standard project). ' +
+          'Die id hängt am Text: nach "edit" gilt die neue id aus der Antwort. ' +
           'Löschen lässt sich nicht rückgängig machen. Nur ändern, wenn die Person es ausdrücklich wünscht.',
         inputSchema: {
           type: 'object',
@@ -528,12 +608,13 @@ export const register: Register = on => {
     // Mehrzeiliges Eingabefeld über die volle Breite (die Spalte dehnt es), darunter Speichern
     // und Abbrechen. Den Fokus setzt es nur beim ersten Zeichnen, und Getipptes überlebt ein
     // Neuzeichnen: sonst flackert der Fokusring, und ein Neuzeichnen setzte den Text zurück.
+    // onSubmit liefert, wohin der Fokus danach geht, sonst auf returnKey.
     const editor = (
       key: string,
       value: string | undefined,
       cancelKey: string,
       returnKey: string,
-      onSubmit: (value: string) => Promise<unknown>,
+      onSubmit: (value: string) => Promise<string | undefined>,
     ) => {
       const isFirst = focusedEditor !== key
       focusedEditor = key
@@ -541,7 +622,7 @@ export const register: Register = on => {
       const save = (v: string) => {
         typed = undefined
         focusedEditor = undefined
-        void onSubmit(v).then(() => focusOn($, returnKey))
+        void onSubmit(v).then(next => focusOn($, next ?? returnKey))
       }
       return (
         <Box flexDirection="column" alignItems="stretch" rowGap={1} marginY={1}>
@@ -569,8 +650,12 @@ export const register: Register = on => {
     }
     const row = (item: TodoItem) => {
       if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
+        // Gespeichert hat der Eintrag eine neue id, der Fokus geht auf dessen ✎
         return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, `todo-edit-${item.id}`, value =>
-          editItem($, scope, item.id, value).then(() => update($, draft, () => null)),
+          editItem($, scope, item.id, value).then(async newId => {
+            await update($, draft, () => null)
+            return newId === undefined ? undefined : `todo-edit-${newId}`
+          }),
         )
       }
       const at = openItems.findIndex(i => i.id === item.id)
@@ -641,7 +726,10 @@ export const register: Register = on => {
             {openItems.map(row)}
             {adding
               ? editor('todo-new-input', undefined, 'todo-new-cancel', 'todo-add', value =>
-                  addItem($, scope, value).then(() => update($, draft, () => null)),
+                  addItem($, scope, value).then(async () => {
+                    await update($, draft, () => null)
+                    return undefined
+                  }),
                 )
               : null}
           </Box>
