@@ -1,43 +1,37 @@
-# todo-liste
+# projekt-mappe
 
-Claude-Code-Mod für eine ToDo-Liste, im Terminal und im Code-Tab der Claude-Desktop-App. Es gibt zwei Listen: eine globale über alle Projekte und eine für das aktuelle Projekt. Bedient wird die Liste über Icons.
+Claude-Code-Mod für die Unterlagen eines Projekts, im Terminal und im Code-Tab der Claude-Desktop-App. Er verwaltet die ToDo-Liste, global und je Projekt, dazu je Projekt Backlog und Changelog in ihren üblichen Formaten. README, CLAUDE.md, Entscheidungen und Pläne zeigt er gerendert an, und fehlende Best-Practice-Dateien legt er mit festem Gerüst an. Bis Version 0.4.0 hieß der Mod todo-liste.
 
 ## Ein- und ausblenden
 
-Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `☑ ToDos`. Gibt es offene Einträge, steht die Zahl dabei, etwa `☑ ToDos 3` für Projekt und global zusammen. Ein Klick öffnet oder schließt die Liste.
+Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `☑ ToDos`. Gibt es offene ToDos, steht die Zahl dabei, etwa `☑ ToDos 3` für Projekt und global zusammen. Ein Klick öffnet oder schließt das Pane.
 
-Ohne Maus geht es mit `/todo-liste`. `/todo-liste global` oder `/todo-liste projekt` öffnet die Liste direkt mit diesem Tab.
+Ohne Maus geht es mit `/projekt-mappe`. `/projekt-mappe global` oder `/projekt-mappe projekt` öffnet direkt diesen Bereich.
 
-Wo die Liste erscheint, bestimmt Claude Code. Im Terminal steht sie im Vollbild ab 110 Spalten neben dem Chatverlauf, sonst über dem Eingabefeld.
+Wo das Pane erscheint, bestimmt Claude Code. Im Terminal steht es im Vollbild ab 110 Spalten neben dem Chatverlauf, sonst über dem Eingabefeld. Der Mod merkt sich, ob das Pane offen war und welcher Bereich und Reiter gewählt war.
 
-Der Mod merkt sich, ob die Liste offen war und welcher Tab gewählt war, und stellt beides in der nächsten Sitzung wieder her.
+## Aufbau
 
-## Bedienung
+Oben stehen `🌐 N` (global) und `📁 N` (aktuelles Projekt), jeweils mit der Zahl offener ToDos. Global gibt es nur die ToDo-Liste. Im Projekt stehen darunter die Reiter:
 
-| Icon | Wirkung |
+| Reiter | Inhalt |
 | --- | --- |
-| `🌐 N` | Tab „global“, N offene Einträge |
-| `📁 N` | Tab „aktuelles Projekt“, N offene Einträge |
-| `＋` | neuer Eintrag (rechts oben): Text eingeben, „Speichern“ oder Enter speichert, Shift+Enter bricht um |
-| `☐` / `☑` | abhaken bzw. wieder öffnen |
-| `✎` | Text ändern, „Speichern“ oder Enter speichert, Shift+Enter bricht um |
-| „Abbrechen“ | Eingabe verwerfen |
-| `↑` `↓` | offenen Eintrag eine Stelle nach oben bzw. unten schieben |
-| `✕` | Eintrag löschen, ohne Rückfrage |
-| `🧹` | alle erledigten Einträge des Tabs entfernen, ohne Rückfrage |
+| ToDo | die ToDo-Liste des Projekts |
+| Backlog | Aufgaben nach Status gruppiert: Offen, In Arbeit, Erledigt, Archiv |
+| Changelog | Einträge unter `[Unreleased]`, Release, darunter die veröffentlichten Versionen |
+| Doku | README.md, CLAUDE.md, AGENTS.md, Entscheidungen, Pläne; darunter „Fehlt“ |
 
-Nach `＋` oder `✎` steht der Fokus gleich im Eingabefeld, man kann sofort tippen. Nach dem Speichern oder Abbrechen steht er wieder auf `＋` bzw. `✎`; Esc führt zurück ins Chat-Eingabefeld.
+Backlog, Changelog und Doku liest der Mod nur, solange das Pane offen ist und ihr Reiter gewählt ist. Von den Backlog-Aufgaben liest er nur die neu, die sich geändert haben.
 
-Neue Einträge kommen ans Ende der offenen. Abgehakte rutschen gedimmt und durchgestrichen ans Ende der Liste. Wieder geöffnete stellen sich hinten bei den offenen an. Einträge dürfen mehrzeilig sein; das Eingabefeld hat drei Zeilen, längere Texte scrollen darin. Mehr als eine Leerzeile am Stück wird zu einer, ein Eintrag hat höchstens 500 Zeichen.
+In der mobilen App gibt es keine Eingabefelder. Dort lassen sich ToDos abhaken und löschen, Aufgaben erledigen und alles ansehen.
 
-In der mobilen App gibt es kein Eingabefeld. Dort lassen sich Einträge nur abhaken und löschen.
+## Toleranz: nur die angefasste Einheit ändert sich
 
-## Speicherorte
+Diese Dateien werden auch von Hand und von Claude gepflegt. Der Mod ändert deshalb nur die Einheit, die er gerade anfasst: eine Checkbox-Zeile, ein Frontmatter-Feld einer Aufgabe, einen Changelog-Eintrag. Alles andere in der Datei bleibt Zeichen für Zeichen stehen, auch Einleitungen, Abschnitte, Fließtext, Byte Order Mark und Windows-Zeilenenden. Was er nicht als Einheit erkennt, zeigt er gerendert an. Gesperrt (`⚠`) ist eine Liste nur, wenn die Datei da, aber nicht lesbar ist.
 
-- **Global:** `~/.claude/todo-liste/TODO.md`, bzw. unter `CLAUDE_CONFIG_DIR`, wenn gesetzt.
-- **Projekt:** `TODO.md` im Projektordner. Der Mod trägt `/TODO.md` in `.git/info/exclude` ein. Die Datei landet so in keinem Commit, und die `.gitignore` des Projekts bleibt unverändert. Läuft die Sitzung in einem Git-Worktree, gilt die Liste des ursprünglichen Projektordners: alle Worktrees eines Repos teilen sich eine Liste. Ohne Git-Repo gilt der Ordner, in dem die Sitzung läuft.
+## ToDo
 
-Beide Dateien folgen dem Format [todo-md](https://github.com/todo-md/todo-md): der Kopf `# TODO`, darunter eine Liste, offene zuerst, erledigte am Ende. Folgezeilen mehrzeiliger Einträge stehen zwei Leerzeichen eingerückt:
+Format nach [todo-md](https://github.com/todo-md/todo-md): Einträge sind Checkbox-Zeilen, Folgezeilen mehrzeiliger Einträge stehen eingerückt darunter.
 
 ```markdown
 # TODO
@@ -45,33 +39,86 @@ Beide Dateien folgen dem Format [todo-md](https://github.com/todo-md/todo-md): d
 - [ ] Release bauen
 - [ ] Doku nachziehen
   mit Beispielen
+  - [ ] Unteraufgabe
 - [x] Tests
+- [-] abgelehnt
 ```
 
-Die Datei gehört dem Mod. Er schreibt sie bei jeder Änderung neu. Von Hand bearbeiten geht, solange sie aus diesen Zeilen besteht; `*` oder `+` als Aufzählung und `[X]` liest er mit und schreibt sie als `- [ ]`/`- [x]` zurück. Eine `TODO.md` mit anderem Inhalt, etwa mit Abschnitten, Fließtext oder Tabellen, überschreibt der Mod nicht. Die Liste zeigt dann `⚠` mit dem Pfad und ist gesperrt, bis die Datei wieder dem Format entspricht.
+| Icon | Wirkung |
+| --- | --- |
+| `＋` | neuer Eintrag (rechts oben): Text eingeben, „Speichern“ oder Enter speichert, Shift+Enter bricht um |
+| `☐` / `☑` | abhaken bzw. wieder öffnen; die Zeile bleibt in der Datei an ihrem Platz |
+| `✎` | Text ändern |
+| „Abbrechen“ | Eingabe verwerfen |
+| `↑` `↓` | mit dem Nachbarn tauschen, wenn beide offen sind, gleich tief stehen und kein anderer Inhalt dazwischen liegt |
+| `✕` | Eintrag löschen, ohne Rückfrage |
+| `🧹` | alle erledigten Einträge entfernen, ohne Rückfrage |
 
-Mehrere Sitzungen können dieselbe Liste bearbeiten. Jede Änderung liest die Datei vorher neu, die letzte gewinnt. Änderungen aus anderen Sitzungen erscheinen nach spätestens 10 Sekunden. Ändert eine andere Sitzung den Text eines Eintrags, den man gerade bearbeitet, schließt sich das Eingabefeld, und das Getippte geht verloren.
+Im Pane stehen die offenen oben, erledigte und abgelehnte (`[-]`) gedimmt darunter, Unteraufgaben eingerückt. Neue Einträge kommen hinter den letzten Eintrag der Datei, gibt es keinen, ans Ende. Eine leere Liste bekommt den Kopf `# TODO`. Ein Eintrag hat höchstens 500 Zeichen.
 
-## Claude und die Liste
+Speicherorte:
 
-Claude bekommt ein Werkzeug `todos` und kann damit die Listen lesen und bearbeiten. Zum Beispiel:
+- **Global:** `~/.claude/projekt-mappe/TODO.md`, bzw. unter `CLAUDE_CONFIG_DIR`, wenn gesetzt.
+- **Projekt:** `TODO.md` im Projektordner, sonst eine vorhandene `todo.md`. Der Mod trägt `/TODO.md` in `.git/info/exclude` ein, die Liste bleibt privat und landet in keinem Commit. Das gilt auch, wenn sich `git` selbst nicht aufrufen lässt, aber ein `.git`-Ordner da ist. Eine schon eingecheckte TODO-Datei bleibt eingecheckt. In einem Git-Worktree gilt die Liste des ursprünglichen Projektordners, alle Worktrees eines Repos teilen sich eine Liste.
+
+## Backlog
+
+Neue Backlogs entstehen im Format von [Backlog.md](https://github.com/MrLesk/Backlog.md), damit dessen CLI, Board und MCP-Server parallel funktionieren:
+
+- Ordner `backlog/` mit `tasks/`, `completed/`, `archive/`, `drafts/` und `config.yml`
+- eine Datei je Aufgabe, `task-12 - Titel-der-Aufgabe.md`, mit Frontmatter `id`, `title`, `status`, `assignee`, `created_date`, `labels`, `dependencies` und einer Beschreibung zwischen den Markierungen von Backlog.md
+- Status aus `config.yml`, ohne Datei `To Do`, `In Progress`, `Done`; erledigt bleibt eine Aufgabe in `tasks/`, archivieren schiebt sie nach `archive/`
+
+Daneben verwaltet der Mod die Ordner-Form, die in einigen Projekten schon existiert: `backlog/tasks/012-slug.md` oder `task-012-slug.md` mit Frontmatter `status` (`offen`, `ruht`, `erledigt`, `gegenstandslos`) und `angelegt`. Erledigen setzt dort `status` und `erledigt` und schiebt die Datei nach `backlog/completed/`. Neue Aufgaben folgen dem Namensmuster der vorhandenen.
+
+Verschoben wird im Git-Repo per `git mv`, sonst per `mv`. Scheitert das, bleibt die Datei, wo sie war, und das Pane meldet den Fehler. Eine einzelne `BACKLOG.md` ohne `backlog/`-Ordner zeigt der Mod nur an.
+
+Im Reiter klappt ein Klick auf eine Aufgabe ihre Beschreibung auf, mit Knöpfen für jeden Status und `🗄` zum Archivieren. `☐`/`☑` erledigt bzw. öffnet wieder. `＋` legt eine Aufgabe an: erste Zeile Titel, der Rest Beschreibung.
+
+## Changelog
+
+Format nach [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/): oben `## [Unreleased]`, Kategorien `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`. `＋` legt einen Eintrag mit Kategorie an. „Release“ macht aus `[Unreleased]` eine Version, `## [1.2.0] - 2026-11-03`, und darüber ein neues, leeres `[Unreleased]`. Das Feld ist mit der Version aus `.claude-plugin/plugin.json` bzw. `package.json` vorbelegt. Leer gelassen, wird das heutige Datum zur Version, `## [2026-11-03]`, für Projekte ohne Versionen.
+
+Bestehende Changelogs schreibt der Mod in ihrem Stil fort: datierte Aufzählungspunkte (`- 2026-11-03: …` oder `- **2026-11-03 (…)**`) bekommen einen neuen Punkt oben, Versionsabschnitte ohne Kategorien ein `[Unreleased]` darüber. Ändern und löschen lassen sich nur Einträge unter `[Unreleased]`. `CHANGES.md`, `HISTORY.md` und Changelogs in einem unbekannten Stil zeigt er nur an.
+
+## Doku und Vollständigkeit
+
+Der Reiter Doku listet `README.md`, `CLAUDE.md` und `AGENTS.md`, Entscheidungen aus `docs/decisions/`, `docs/adr/` und `backlog/decisions/` sowie die Pläne unter `plans/`. Ein Klick zeigt die Datei gerendert, nur lesend. Längere Dateien als 90 000 Zeichen werden gekürzt angezeigt, mit Hinweis.
+
+Darunter steht „Fehlt“ mit dem, was nach Best Practice fehlt, und je einem Knopf zum Anlegen:
+
+| Fehlt | Gerüst |
+| --- | --- |
+| Changelog | `CHANGELOG.md` nach Keep a Changelog, leeres `[Unreleased]` |
+| Backlog | `backlog/config.yml` und `backlog/tasks/` nach Backlog.md |
+| Entscheidungen | `docs/decisions/0001-record-architecture-decisions.md` und `template.md` nach Michael Nygard |
+| Lizenz | `LICENSE`: MIT oder Apache-2.0 im SPDX-Wortlaut, oder „Alle Rechte vorbehalten“; Jahr und Name aus `git config user.name` |
+
+Als vorhanden zählen auch eine einzelne `BACKLOG.md`, `CHANGES.md` und `HISTORY.md`. Vorhandene Dateien überschreibt der Mod nie. README, CLAUDE.md und AGENTS.md bekommen keine Vorlage, ihr Inhalt ist projektspezifisch. Fehlt CLAUDE.md, weist der Reiter auf Claude Codes `/init` hin.
+
+## Claude und die Mappe
+
+Claude bekommt das Werkzeug `projekt` und kann damit ToDo-Liste, Backlog und Changelog lesen und bearbeiten. Zum Beispiel:
 
 - „setz ‚Release bauen‘ auf meine ToDo-Liste“
 - „hak ‚Test‘ ab“
-- „benenn den zweiten Eintrag um in …“
-- „schieb ‚Doku‘ nach oben“
-- „lösch die erledigten im Projekt“
+- „leg im Backlog eine Aufgabe ‚Backup prüfen‘ an“
+- „setz TASK-3 auf In Progress“
+- „trag im Changelog unter Fixed ein, dass der Fokus wieder stimmt“
+- „mach ein Release 0.5.0“
 
-Ohne Angabe legt Claude im Projekt an, auf Wunsch auch global. Beim Ändern trifft Claude einen Eintrag über seine Kennung, die das Lesen der Liste mitliefert. Die Kennung steht nicht in der Datei, der Mod bildet sie beim Lesen aus dem Text; nach einer Textänderung hat ein Eintrag deshalb eine neue. Löschen lässt sich nicht rückgängig machen, wie im Pane. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
+Beim Ändern trifft Claude ToDos und Aufgaben über ihre Kennung, die das Lesen mitliefert. Die Kennung eines ToDos steht nicht in der Datei. Der Mod bildet sie aus dem Text, nach einer Textänderung ist sie also neu. Löschen lässt sich nicht rückgängig machen, wie im Pane. Für die Freigabe gelten Claude Codes normale Berechtigungsregeln. Das Werkzeug liegt hinter ToolSearch und kostet keinen Kontext, solange Claude es nicht braucht.
 
 ## Installieren
 
 In einer Terminal-Sitzung von Claude Code:
 
 ```
-/plugin install todo-liste --marketplace marcomarkl/claude-code-mods
+/plugin install projekt-mappe --marketplace marcomarkl/claude-code-mods
 ```
 
-In der Desktop-App: **+** neben dem Eingabefeld, **Plugins**, **Add marketplace** mit `marcomarkl/claude-code-mods`, dann bei todo-liste **Add plugin**.
+In der Desktop-App: **+** neben dem Eingabefeld, **Plugins**, **Add marketplace** mit `marcomarkl/claude-code-mods`, dann bei projekt-mappe **Add plugin**.
 
-Zum Ausprobieren eines Arbeitsstands: `claude --plugin-dir /Pfad/zu/claude-code-mods/plugins/todo-liste`.
+Wer todo-liste installiert hat, deinstalliert es vorher. Sonst laufen beide Mods mit zwei Panes nebeneinander.
+
+Zum Ausprobieren eines Arbeitsstands: `claude --plugin-dir /Pfad/zu/claude-code-mods/plugins/projekt-mappe`.
