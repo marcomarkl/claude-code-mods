@@ -72,7 +72,7 @@ const REFRESH_MS = 10_000
 
 // Alle Icons an einer Stelle
 const ICON = {
-  toggle: '☑',
+  mappe: '🗂',
   global: '🌐',
   project: '📁',
   add: '＋',
@@ -87,13 +87,8 @@ const ICON = {
   archive: '🗄',
 } as const
 
-// Titel des Panes; die Schalter unter dem Eingabefeld führen direkt auf ihren Reiter
-const PANE_TITLE = '🗂 Projektmappe'
-const SWITCHES: ReadonlyArray<{ id: 'todo' | 'backlog' | 'changelog'; label: string }> = [
-  { id: 'todo', label: `${ICON.toggle} ToDo` },
-  { id: 'backlog', label: '🗂 Backlog' },
-  { id: 'changelog', label: '📜 Changelog' },
-]
+// Titel des Panes; der Schalter unter dem Eingabefeld zeigt nur das Symbol
+const PANE_TITLE = `${ICON.mappe} Projektmappe`
 
 const paths = atom({ plugin: 'projekt-mappe', key: 'paths' } as const, null, { shape: 'v1' })
 const lists = atom({ plugin: 'projekt-mappe', key: 'lists' } as const, null, { shape: 'v1' })
@@ -342,22 +337,6 @@ async function setTab($: EngineInterface, scope: Scope) {
   await update($, opened, () => null)
   await saveUi($)
   await refreshSection($)
-}
-
-// Ein Schalter unter dem Eingabefeld: öffnet das Pane auf seinem Reiter, schaltet bei offenem
-// Pane um, und schließt es, wenn sein Reiter schon zu sehen ist. ToDo bleibt im gewählten
-// Bereich (🌐 oder 📁); Backlog und Changelog gibt es nur im Projekt.
-async function jumpTo($: EngineInterface, target: 'todo' | 'backlog' | 'changelog') {
-  const isShown = await read($, isOpen)
-  const scope = await read($, tab)
-  const shownSection: Section = scope === 'project' ? await read($, section) : 'todo'
-  if (isShown && shownSection === target) {
-    await setOpen($, false)
-    return
-  }
-  if (target !== 'todo' && scope !== 'project') await update($, tab, () => 'project')
-  if (target !== 'todo' || scope === 'project') await setSection($, target)
-  if (!isShown) await setOpen($, true)
 }
 
 // Offen ist, was weder erledigt noch abgelehnt ist
@@ -907,7 +886,6 @@ export const register: Register = on => {
     }
     try {
       await refresh($)
-      await refreshBacklog($)
       const saved = (await $.store.get(UI_KEY)) as Partial<UiState> | undefined
       if (saved?.tab === 'global' || saved?.tab === 'project') await update($, tab, () => saved.tab as Scope)
       const savedSection = SECTIONS.find(x => x.id === saved?.section)?.id
@@ -917,13 +895,12 @@ export const register: Register = on => {
       // Dann startet die Liste geschlossen
     }
     // Änderungen anderer Sitzungen nachladen
-    // Das Backlog liest der Takt immer, für die Zahl am Schalter: vier Ordner auflisten, nur
-    // geänderte Dateien neu lesen. Changelog und Doku nur, solange das Pane sie zeigt.
+    // Änderungen anderer Sitzungen nachladen; Backlog, Changelog und Doku nur, solange das
+    // Pane ihren Reiter zeigt
     $.clock.every(REFRESH_MS, () => {
       void (async () => {
         await refresh($)
-        await refreshBacklog($)
-        if ((await read($, isOpen)) && ['changelog', 'doku'].includes(await read($, section))) await refreshSection($)
+        if (await read($, isOpen)) await refreshSection($)
       })().catch(() => undefined)
     })
     return started
@@ -936,7 +913,7 @@ export const register: Register = on => {
       const found = await resolvePaths($)
       await update($, paths, () => found)
       await refresh($)
-      await refreshBacklog($)
+      if (await read($, isOpen)) await refreshSection($)
     } catch {
       // Beim nächsten Takt erneut
     }
@@ -977,31 +954,16 @@ export const register: Register = on => {
 
   on('tool.call', { tool: TOOL_ID }, async ($, e) => runTool($, e as unknown as ToolInput))
 
-  // Drei Schalter rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen.
-  // Hervorgehoben ist der, dessen Reiter das offene Pane gerade zeigt.
+  // Schalter rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen: nur das
+  // Symbol, gedimmt, solange das Pane zu ist. Öffnet auf dem zuletzt gewählten Reiter.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const modes = await next(e)
     const { Box, Button } = $.ui.resolve(e)
-    const l = await read($, lists)
-    const tasks = (await read($, backlog))?.tasks ?? []
     const isShown = await read($, isOpen)
-    const shownSection: Section = (await read($, tab)) === 'project' ? await read($, section) : 'todo'
-    const counts: Record<string, number> = {
-      todo: openCount(l, 'global') + openCount(l, 'project'),
-      backlog: tasks.filter(t => t.group === 'todo' || t.group === 'doing').length,
-      changelog: 0,
-    }
     return (
       <Box flexDirection="row" columnGap={1}>
         {modes}
-        {SWITCHES.map(x => (
-          <Button
-            key={`mappe-${x.id}`}
-            label={(counts[x.id] ?? 0) === 0 ? x.label : `${x.label} ${counts[x.id]}`}
-            dimColor={!(isShown && shownSection === x.id)}
-            onPress={() => void jumpTo($, x.id)}
-          />
-        ))}
+        <Button key="mappe-toggle" label={ICON.mappe} dimColor={!isShown} onPress={() => void setOpen($, !isShown)} />
       </Box>
     )
   })

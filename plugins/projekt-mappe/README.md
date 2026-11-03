@@ -4,15 +4,7 @@ Claude-Code-Mod für die Unterlagen eines Projekts, im Terminal und im Code-Tab 
 
 ## Ein- und ausblenden
 
-Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, stehen drei Schalter:
-
-| Schalter | Zahl | Klick |
-| --- | --- | --- |
-| `☑ ToDo 3` | offene ToDos, Projekt und global zusammen | ToDo-Liste im zuletzt gewählten Bereich (🌐 oder 📁) |
-| `🗂 Backlog 5` | offene Aufgaben (To Do und In Progress bzw. offen und ruht) | Reiter Backlog des Projekts |
-| `📜 Changelog` | keine | Reiter Changelog des Projekts |
-
-Ist das Pane zu, öffnet ein Klick es auf diesem Reiter. Ist es offen, schaltet der Klick um. Zeigt es den Reiter schon, schließt der Klick es. Der Schalter des sichtbaren Reiters ist hervorgehoben, die anderen sind gedimmt. Ohne offene Einträge steht keine Zahl dabei. Das Pane selbst heißt `🗂 Projektmappe`.
+Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `🗂`, nur das Symbol. Ein Klick öffnet das Pane `🗂 Projektmappe` auf dem zuletzt gewählten Reiter oder schließt es wieder. Solange das Pane zu ist, ist das Symbol gedimmt.
 
 Ohne Maus geht es mit `/projekt-mappe`. `/projekt-mappe global` oder `/projekt-mappe projekt` öffnet die ToDo-Liste in diesem Bereich, `/projekt-mappe backlog`, `changelog` oder `doku` den Reiter.
 
@@ -29,7 +21,7 @@ Oben stehen `🌐 N` (global) und `📁 N` (aktuelles Projekt), jeweils mit der 
 | Changelog | Einträge unter `[Unreleased]`, Release, darunter die veröffentlichten Versionen |
 | Doku | README.md, CLAUDE.md, AGENTS.md, Entscheidungen, Pläne; darunter „Fehlt“ |
 
-Alle 10 Sekunden liest der Mod die beiden ToDo-Listen und das Backlog neu, für die Zahlen an den Schaltern. Beim Backlog listet er dafür nur die Ordner auf und liest bloß die Aufgaben neu, die sich geändert haben. Changelog und Doku liest er nur, solange das Pane ihren Reiter zeigt.
+Alle 10 Sekunden liest der Mod die beiden ToDo-Listen neu, damit Änderungen anderer Sitzungen ankommen. Backlog, Changelog und Doku liest er nur, solange das Pane ihren Reiter zeigt. Von den Backlog-Aufgaben liest er dabei nur die neu, die sich geändert haben.
 
 In der mobilen App gibt es keine Eingabefelder. Dort lassen sich ToDos abhaken und löschen, Aufgaben erledigen und alles ansehen.
 

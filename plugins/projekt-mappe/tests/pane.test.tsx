@@ -312,7 +312,7 @@ test('TODO.md: gleiche Texte haben getrennte ids, auch über die Listen hinweg',
 
 // ---- Schalter ------------------------------------------------------------------
 
-test('Schalter rechts unter dem Eingabefeld: Icon, mit Zahl offener Einträge', async ($, on) => {
+test('Schalter rechts unter dem Eingabefeld: nur das Symbol, gedimmt, solange das Pane zu ist', async ($, on) => {
   engine(on, {
     files: {
       [GLOBAL]: fileOf([{ text: 'Steuer' }]),
@@ -324,27 +324,22 @@ test('Schalter rechts unter dem Eingabefeld: Icon, mit Zahl offener Einträge', 
     const ui = await $.ui.mount({ ...SESSION_MODE, surface })
     // Claude Codes eigene Modus-Anzeige bleibt
     expect((await ui.find({ type: 'Text', text: 'modus' }))?.text).toBe('modus')
-    expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo 3')
+    const toggle = await ui.find({ type: 'Button', key: 'mappe-toggle' })
+    expect(toggle?.props.label).toBe('🗂')
+    expect(toggle?.props.dimColor).toBe(true)
+    expect((await ui.findAll({ type: 'Button' })).length).toBe(1)
     await ui.unmount()
   }
-})
-
-test('Schalter ohne offene Einträge: nur das Icon', async ($, on) => {
-  engine(on)
-  await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo')
-  await ui.unmount()
 })
 
 test('Schalter öffnet und schließt das Pane und merkt es sich', async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  await ui.press({ key: 'mappe-todo' })
+  await ui.press({ key: 'mappe-toggle' })
   expect(isPaneOpen).toBe(true)
   expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project', section: 'todo' })
-  await ui.press({ key: 'mappe-todo' })
+  await ui.press({ key: 'mappe-toggle' })
   expect(isPaneOpen).toBe(false)
   expect(stored['ui.v1']).toEqual({ isOpen: false, tab: 'project', section: 'todo' })
   await ui.unmount()
@@ -605,13 +600,13 @@ test('Fokus nicht verfügbar: Neu anlegen, Bearbeiten und Abbrechen klappen trot
 test('Änderungen einer anderen Sitzung kommen nach dem 10-Sekunden-Takt an', async ($, on) => {
   const clock = engine(on, { files: { [PROJECT]: fileOf([{ text: 'A' }]) } })
   await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo 1')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 1')
   files[PROJECT] = fileOf([{ text: 'A' }, { text: 'B' }])
   await clock.advance(5_000)
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo 1')
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 1')
   await clock.advance(5_000)
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo 2')
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 2')
   await ui.unmount()
 })
 
@@ -745,12 +740,12 @@ test('Werkzeug: leerer Text abgelehnt, Umbruch bleibt, über 500 Zeichen gekürz
   expect(text.length).toBe(500)
 })
 
-test('Werkzeug: ein Anlegen zieht die Zahl am Schalter nach', async ($, on) => {
+test('Werkzeug: ein Anlegen zieht die Zahl am Reiter nach', async ($, on) => {
   engine(on)
   await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'terminal' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await $.tool.call({ tool: TOOL, action: 'add', text: 'neu' } as never)
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.label).toBe('☑ ToDo 1')
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 1')
   await ui.unmount()
 })
 
@@ -993,63 +988,6 @@ test('Werkzeug changelog: add mit Kategorie, list, release', async ($, on) => {
   expect(files[`${REPO}/CHANGELOG.md`]).toContain('## [0.5.0] - 2026-11-02\n\n### Fixed\n\n- Fokus')
   expect(await call($, { area: 'changelog', action: 'release' })).toContain('kein Release')
   expect(await call($, { area: 'unbekannt', action: 'list' })).toContain('area muss')
-})
-
-// ---- Schalter unter dem Eingabefeld --------------------------------------------------
-
-test('Schalter: ToDo und Backlog mit Zahl offener, Changelog ohne Zahl', async ($, on) => {
-  engine(on, {
-    files: {
-      [PROJECT]: fileOf([{ text: 'A' }]),
-      [`${BL}/tasks/001-a.md`]: ORDNER_TASK,
-      [`${BL}/tasks/002-b.md`]: ORDNER_TASK.replace('status: offen', 'status: ruht'),
-      [`${BL}/completed/000-c.md`]: ORDNER_TASK.replace('status: offen', 'status: erledigt'),
-    },
-  })
-  await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  const labels = (await ui.findAll({ type: 'Button' })).map(b => String(b.props.label))
-  expect(labels).toEqual(['☑ ToDo 1', '🗂 Backlog 2', '📜 Changelog'])
-  await ui.unmount()
-})
-
-test('Schalter: öffnet auf dem Reiter, schaltet um, schließt beim zweiten Klick', async ($, on) => {
-  engine(on)
-  await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  await ui.press({ key: 'mappe-backlog' })
-  expect(isPaneOpen).toBe(true)
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project', section: 'backlog' })
-  expect((await ui.find({ type: 'Button', key: 'mappe-backlog' }))?.props.dimColor).toBe(false)
-  expect((await ui.find({ type: 'Button', key: 'mappe-todo' }))?.props.dimColor).toBe(true)
-  await ui.press({ key: 'mappe-changelog' })
-  expect(isPaneOpen).toBe(true)
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project', section: 'changelog' })
-  await ui.press({ key: 'mappe-changelog' })
-  expect(isPaneOpen).toBe(false)
-  await ui.unmount()
-})
-
-test('Schalter: aus dem globalen Bereich springt Backlog ins Projekt, ToDo bleibt global', async ($, on) => {
-  engine(on, { store: { 'ui.v1': { isOpen: false, tab: 'global', section: 'todo' } } })
-  await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  await ui.press({ key: 'mappe-todo' })
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'global', section: 'todo' })
-  await ui.press({ key: 'mappe-backlog' })
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project', section: 'backlog' })
-  await ui.unmount()
-})
-
-test('Schalter: eine Änderung am Backlog zieht die Zahl im Takt nach', async ($, on) => {
-  const clock = engine(on, { files: { [`${BL}/tasks/001-a.md`]: ORDNER_TASK } })
-  await start($)
-  const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'mappe-backlog' }))?.props.label).toBe('🗂 Backlog 1')
-  files[`${BL}/tasks/002-b.md`] = ORDNER_TASK
-  await clock.advance(10_000)
-  expect((await ui.find({ type: 'Button', key: 'mappe-backlog' }))?.props.label).toBe('🗂 Backlog 2')
-  await ui.unmount()
 })
 
 test('Befehl /projekt-mappe backlog, changelog, doku: öffnet direkt dort', async ($, on) => {
