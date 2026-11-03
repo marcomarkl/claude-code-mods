@@ -228,9 +228,7 @@ export function newTask(
   const desc = description.trim()
   return {
     file: `tasks/${hasTaskPrefix ? 'task-' : ''}${num}-${asciiSlug(title)}.md`,
-    text: ['---', 'status: offen', `angelegt: ${now.date}`, '---', '', `# ${title}`, '', ...(desc === '' ? [] : [desc, '']), ''].join(
-      '\n',
-    ),
+    text: ['---', 'status: offen', `angelegt: ${now.date}`, '---', '', `# ${title}`, ...(desc === '' ? [] : ['', desc]), ''].join('\n'),
   }
 }
 

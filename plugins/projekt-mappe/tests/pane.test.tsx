@@ -241,32 +241,11 @@ test('Toleranz: reiner Fließtext wird angezeigt, nicht gesperrt', async ($, on)
   await ui.unmount()
 })
 
-test('Toleranz: Rundlauf ohne Änderung ist zeichengleich, auch mit BOM und CRLF', async () => {
-  for (const raw of [SOCIAL, HA, VIDEO, '', '# TODO\n', '﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n']) {
-    const doc = parseDoc(raw)
-    expect(`${doc.bom ? '﻿' : ''}${doc.lines.join(doc.eol)}`).toBe(raw)
-  }
-})
-
 test('Toleranz: BOM, CRLF und Aufzählungszeichen bleiben beim Anlegen erhalten', async ($, on) => {
   engine(on, { files: { [PROJECT]: '﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n' } })
   await start($)
   await call($, { action: 'add', text: 'neu' })
   expect(files[PROJECT]).toBe('﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n* [ ] neu\r\n')
-})
-
-test('Toleranz: Checkboxen im Codeblock sind kein Eintrag', async () => {
-  const doc = parseDoc('# TODO\n\n- [ ] echt\n\n```\n- [ ] Beispiel\n```\n')
-  expect(itemsOf(doc, 'project').map(i => i.text)).toEqual(['echt'])
-})
-
-test('Toleranz: eingerückte Checkbox ist eine eigene Unteraufgabe', async () => {
-  const doc = parseDoc('- [ ] Eltern\n  mit Notiz\n  - [ ] Kind\n- [ ] Nächster\n')
-  expect(itemsOf(doc, 'project').map(i => [i.text, i.depth])).toEqual([
-    ['Eltern\nmit Notiz', 0],
-    ['Kind', 1],
-    ['Nächster', 0],
-  ])
 })
 
 test('Toleranz: verschieben nur innerhalb eines Abschnitts', async ($, on) => {

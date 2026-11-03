@@ -136,7 +136,8 @@ test('Neue Aufgabe in der Ordner-Form folgt dem vorhandenen Namensmuster', async
   const aida = [taskOf('completed/027-zwei.md', AIDA, DEFAULT_CONFIG)]
   const made = newTask('ordner', aida, DEFAULT_CONFIG, 'Größe messen', 'Erst im Betrieb.', NOW)
   expect(made.file).toBe('tasks/028-groesse-messen.md')
-  expect(made.text).toBe('---\nstatus: offen\nangelegt: 2026-11-03\n---\n\n# Größe messen\n\nErst im Betrieb.\n\n')
+  expect(made.text).toBe('---\nstatus: offen\nangelegt: 2026-11-03\n---\n\n# Größe messen\n\nErst im Betrieb.\n')
+  expect(newTask('ordner', aida, DEFAULT_CONFIG, 'Ohne', '', NOW).text.endsWith('# Ohne\n')).toBe(true)
 })
 
 test('config.yml beim Anlegen: Werte, die das CLI von Backlog.md liest', async () => {
