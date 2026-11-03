@@ -1,6 +1,6 @@
 {
   "name": "projekt-mappe",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Projektmappe in einem Pane: ToDo global und pro Projekt, Backlog und Changelog nach Best Practice verwalten, README, CLAUDE.md, Entscheidungen und Pläne ansehen, fehlende Dateien anlegen; Claude kann lesen und bearbeiten",
   "types": "./types/index.d.ts"
 }

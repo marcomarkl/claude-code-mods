@@ -4,9 +4,17 @@ Claude-Code-Mod für die Unterlagen eines Projekts, im Terminal und im Code-Tab 
 
 ## Ein- und ausblenden
 
-Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, steht der Schalter `☑ ToDos`. Gibt es offene ToDos, steht die Zahl dabei, etwa `☑ ToDos 3` für Projekt und global zusammen. Ein Klick öffnet oder schließt das Pane.
+Rechts unter dem Eingabefeld, neben Claude Codes eigenen Modus-Anzeigen, stehen drei Schalter:
 
-Ohne Maus geht es mit `/projekt-mappe`. `/projekt-mappe global` oder `/projekt-mappe projekt` öffnet direkt diesen Bereich.
+| Schalter | Zahl | Klick |
+| --- | --- | --- |
+| `☑ ToDo 3` | offene ToDos, Projekt und global zusammen | ToDo-Liste im zuletzt gewählten Bereich (🌐 oder 📁) |
+| `🗂 Backlog 5` | offene Aufgaben (To Do und In Progress bzw. offen und ruht) | Reiter Backlog des Projekts |
+| `📜 Changelog` | keine | Reiter Changelog des Projekts |
+
+Ist das Pane zu, öffnet ein Klick es auf diesem Reiter. Ist es offen, schaltet der Klick um. Zeigt es den Reiter schon, schließt der Klick es. Der Schalter des sichtbaren Reiters ist hervorgehoben, die anderen sind gedimmt. Ohne offene Einträge steht keine Zahl dabei. Das Pane selbst heißt `🗂 Projektmappe`.
+
+Ohne Maus geht es mit `/projekt-mappe`. `/projekt-mappe global` oder `/projekt-mappe projekt` öffnet die ToDo-Liste in diesem Bereich, `/projekt-mappe backlog`, `changelog` oder `doku` den Reiter.
 
 Wo das Pane erscheint, bestimmt Claude Code. Im Terminal steht es im Vollbild ab 110 Spalten neben dem Chatverlauf, sonst über dem Eingabefeld. Der Mod merkt sich, ob das Pane offen war und welcher Bereich und Reiter gewählt war.
 
@@ -21,7 +29,7 @@ Oben stehen `🌐 N` (global) und `📁 N` (aktuelles Projekt), jeweils mit der 
 | Changelog | Einträge unter `[Unreleased]`, Release, darunter die veröffentlichten Versionen |
 | Doku | README.md, CLAUDE.md, AGENTS.md, Entscheidungen, Pläne; darunter „Fehlt“ |
 
-Backlog, Changelog und Doku liest der Mod nur, solange das Pane offen ist und ihr Reiter gewählt ist. Von den Backlog-Aufgaben liest er nur die neu, die sich geändert haben.
+Alle 10 Sekunden liest der Mod die beiden ToDo-Listen und das Backlog neu, für die Zahlen an den Schaltern. Beim Backlog listet er dafür nur die Ordner auf und liest bloß die Aufgaben neu, die sich geändert haben. Changelog und Doku liest er nur, solange das Pane ihren Reiter zeigt.
 
 In der mobilen App gibt es keine Eingabefelder. Dort lassen sich ToDos abhaken und löschen, Aufgaben erledigen und alles ansehen.
 
