@@ -52,6 +52,10 @@ export type Draft =
   | { kind: 'edit'; scope: Scope; id: string }
   /** Neue Backlog-Aufgabe */
   | { kind: 'task' }
+  /** Neuer Changelog-Eintrag, einen vorhandenen ändern, Release */
+  | { kind: 'entry' }
+  | { kind: 'entry-edit'; index: number }
+  | { kind: 'release' }
 
 /** Reiter im Projekt. Global gibt es nur die ToDo-Liste. */
 export type Section = 'todo' | 'backlog' | 'changelog' | 'doku'
@@ -76,6 +80,29 @@ export type Task = {
   group: Group
   /** Der Körper ohne Frontmatter, zum Anzeigen. */
   body: string
+}
+
+/**
+ * keep: Keep a Changelog mit [Unreleased]; versions: Versionsabschnitte ohne [Unreleased];
+ * dated: datierte Aufzählungspunkte; unknown: nur anzeigen; empty: leer oder fehlt.
+ */
+export type ChangelogStyle = 'keep' | 'versions' | 'dated' | 'unknown' | 'empty'
+
+/** Ein Eintrag unter [Unreleased]. */
+export type ChangelogEntry = { category: string; text: string }
+
+/** Der Changelog des Projekts, wie zuletzt gelesen. */
+export type ChangelogState = {
+  /** Gefundene Datei; fehlt, wenn es keinen Changelog gibt. */
+  file?: string
+  /** CHANGES.md und HISTORY.md werden nur angezeigt. */
+  isWritable: boolean
+  style: ChangelogStyle
+  unreleased: ChangelogEntry[]
+  /** Alles außer [Unreleased], zum Anzeigen. */
+  rest: string
+  /** Vorschlag für Release, aus plugin.json bzw. package.json. */
+  version?: string
 }
 
 /** Das Backlog des Projekts, wie zuletzt gelesen. */
@@ -105,6 +132,7 @@ declare module 'claude-code' {
       isOpen: Shaped<boolean>
       section: Shaped<Section>
       backlog: Shaped<BacklogState | null>
+      changelog: Shaped<ChangelogState | null>
       /** Datei der aufgeklappten Aufgabe bzw. der geöffneten Doku-Datei */
       opened: Shaped<string | null>
       /** Letzte Meldung im Pane, etwa ein gescheitertes Verschieben */

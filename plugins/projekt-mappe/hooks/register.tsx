@@ -1,7 +1,30 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { BacklogState, Draft, ListState, Lists, Paths, Scope, Section, Task, TodoItem, UiState } from '../types'
+import type {
+  BacklogState,
+  ChangelogState,
+  Draft,
+  ListState,
+  Lists,
+  Paths,
+  Scope,
+  Section,
+  Task,
+  TodoItem,
+  UiState,
+} from '../types'
+import {
+  addEntry,
+  CATEGORIES,
+  CATEGORY_LABEL,
+  editEntry,
+  release,
+  removeEntry,
+  restOf,
+  styleOf as changelogStyleOf,
+  unreleasedOf,
+} from './changelog'
 import {
   configYaml,
   DEFAULT_CONFIG,
@@ -71,11 +94,13 @@ const section = atom({ plugin: 'projekt-mappe', key: 'section' } as const, 'todo
 const backlog = atom({ plugin: 'projekt-mappe', key: 'backlog' } as const, null, { shape: 'v1' })
 const opened = atom({ plugin: 'projekt-mappe', key: 'opened' } as const, null, { shape: 'v1' })
 const notice = atom({ plugin: 'projekt-mappe', key: 'notice' } as const, null, { shape: 'v1' })
+const changelog = atom({ plugin: 'projekt-mappe', key: 'changelog' } as const, null, { shape: 'v1' })
 
 // Die Reiter im Projekt, in dieser Reihenfolge
 const SECTIONS: ReadonlyArray<{ id: Section; label: string }> = [
   { id: 'todo', label: 'ToDo' },
   { id: 'backlog', label: 'Backlog' },
+  { id: 'changelog', label: 'Changelog' },
 ]
 
 // ---- Dateien ---------------------------------------------------------------
@@ -325,6 +350,7 @@ async function refreshSection($: EngineInterface) {
   if ((await read($, tab)) !== 'project') return
   const current = await read($, section)
   if (current === 'backlog') await refreshBacklog($)
+  if (current === 'changelog') await refreshChangelog($)
 }
 
 // ---- Backlog --------------------------------------------------------------------
@@ -474,6 +500,73 @@ async function addTask($: EngineInterface, title: string, description: string): 
   await refreshBacklog($)
   return (await read($, backlog))?.tasks.find(t => t.file === made.file)
 }
+
+// ---- Changelog ------------------------------------------------------------------
+
+// Geschrieben wird nur CHANGELOG.md (bzw. changelog.md); CHANGES.md und HISTORY.md nur angezeigt
+const CHANGELOG_FILES = ['CHANGELOG.md', 'changelog.md', 'CHANGES.md', 'HISTORY.md']
+
+// Die Version des Projekts als Vorschlag für Release
+async function versionOf($: EngineInterface, root: string): Promise<string | undefined> {
+  for (const file of [`${root}/.claude-plugin/plugin.json`, `${root}/package.json`]) {
+    const text = await readText($, file)
+    if (text === undefined) continue
+    try {
+      const v = (JSON.parse(text) as { version?: unknown }).version
+      if (typeof v === 'string' && v !== '') return v
+    } catch {
+      // Kein gültiges JSON: kein Vorschlag
+    }
+  }
+  return undefined
+}
+
+async function findChangelog($: EngineInterface, root: string): Promise<{ path: string; isWritable: boolean } | undefined> {
+  for (const name of CHANGELOG_FILES) {
+    const path = `${root}/${name}`
+    if (await $.fs.exists(path).catch(() => false)) return { path, isWritable: /^changelog\.md$/i.test(name) }
+  }
+  return undefined
+}
+
+async function readChangelog($: EngineInterface): Promise<ChangelogState> {
+  const p = await currentPaths($)
+  const version = await versionOf($, p.root)
+  const found = await findChangelog($, p.root)
+  const raw = found === undefined ? '' : ((await readText($, found.path)) ?? '')
+  return {
+    ...(found === undefined ? {} : { file: found.path }),
+    isWritable: found?.isWritable ?? true,
+    style: changelogStyleOf(raw),
+    unreleased: unreleasedOf(raw),
+    rest: restOf(raw),
+    ...(version === undefined ? {} : { version }),
+  }
+}
+
+async function refreshChangelog($: EngineInterface) {
+  const next = await readChangelog($)
+  if (JSON.stringify(await read($, changelog)) !== JSON.stringify(next)) await update($, changelog, () => next)
+}
+
+// Lesen, ändern, schreiben wie bei der ToDo-Liste; ohne Datei entsteht CHANGELOG.md.
+// Liefert eine Fehlermeldung, wenn nichts geschrieben wurde.
+async function changeChangelog($: EngineInterface, fn: (raw: string, date: string) => string | undefined): Promise<string | undefined> {
+  const p = await currentPaths($)
+  const found = await findChangelog($, p.root)
+  if (found !== undefined && !found.isWritable) return `Nur zum Ansehen: ${found.path}`
+  const path = found?.path ?? `${p.root}/CHANGELOG.md`
+  const raw = found === undefined ? '' : await readText($, path)
+  if (raw === undefined) return `Nicht lesbar: ${path}`
+  const next = fn(raw, (await nowParts($)).date)
+  if (next === undefined) return changelogStyleOf(raw) === 'unknown' ? `Stil nicht erkannt, nur zum Ansehen: ${path}` : 'Nichts zu ändern.'
+  if (next !== raw) await $.fs.write(path, next)
+  await refreshChangelog($)
+  return undefined
+}
+
+// Die Kategorie, die das Eingabefeld für einen neuen Eintrag gerade gewählt hat
+let entryCategory: string = CATEGORIES[0]
 
 // ---- Werkzeug für Claude -------------------------------------------------------
 
@@ -699,7 +792,7 @@ export const register: Register = on => {
     }
     const current: Section = scope === 'project' ? await read($, section) : 'todo'
     const isMobile = e.surface === 'mobile'
-    const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Markdown, Select } = $.ui.resolve(e)
 
     // Aktionen einer Zeile: ohne Rahmen, gedimmt, unter dem Zeiger voll sichtbar
     const action = (key: string, label: string, onPress: () => void) => (
@@ -977,7 +1070,126 @@ export const register: Register = on => {
       )
     }
 
+    // ---- Reiter Changelog ----
+    const changelogView = async () => {
+      const state = await read($, changelog)
+      const message = await read($, notice)
+      const canWrite = !isMobile && state !== null && state.isWritable && state.style !== 'unknown'
+      const hasCategories = state?.style !== 'dated'
+      const canRelease = canWrite && (state?.unreleased.length ?? 0) > 0 && state?.style !== 'dated'
+      const fail = (failed: string | undefined) => (failed === undefined ? undefined : update($, notice, () => failed))
+      const right = (
+        <Box flexDirection="row" columnGap={2}>
+          {canRelease ? (
+            <Button
+              key="entry-release"
+              plain
+              dimColor
+              label="Release"
+              onPress={() => void update($, draft, (): Draft => ({ kind: 'release' })).then(() => focusOn($, 'release-input'))}
+            />
+          ) : null}
+          {canWrite ? (
+            <Button
+              key="entry-add"
+              plain
+              label={ICON.add}
+              onPress={() => void update($, draft, (): Draft => ({ kind: 'entry' })).then(() => focusOn($, 'entry-new-input'))}
+            />
+          ) : null}
+        </Box>
+      )
+      const entries = state?.unreleased ?? []
+      const entryRow = (entry: { category: string; text: string }, index: number) => {
+        if (editing?.kind === 'entry-edit' && editing.index === index) {
+          return editor(`entry-edit-input-${index}`, entry.text, `entry-edit-cancel-${index}`, `entry-edit-${index}`, value =>
+            changeChangelog($, raw => editEntry(raw, index, cleanText(value).replace(/\n+/g, ' '))).then(async failed => {
+              await fail(failed)
+              await update($, draft, () => null)
+              return undefined
+            }),
+          )
+        }
+        return (
+          <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text>{entry.text}</Text>
+            </Box>
+            {canWrite
+              ? action(`entry-edit-${index}`, ICON.edit, () => {
+                  void update($, draft, (): Draft => ({ kind: 'entry-edit', index })).then(() => focusOn($, `entry-edit-input-${index}`))
+                })
+              : null}
+            {canWrite ? action(`entry-remove-${index}`, ICON.remove, () => void changeChangelog($, raw => removeEntry(raw, index)).then(fail)) : null}
+          </Box>
+        )
+      }
+      const byCategory = [...new Set(entries.map(x => x.category))]
+      return (
+        <Box flexDirection="column" rowGap={1}>
+          {header(right)}
+          {warning(message)}
+          {state !== null && !state.isWritable ? <Text dimColor>{`Nur zum Ansehen: ${state.file ?? ''}`}</Text> : null}
+          {state?.style === 'unknown' ? <Text dimColor>Stil nicht erkannt, nur zum Ansehen.</Text> : null}
+          {editing?.kind === 'entry' && canWrite ? (
+            <Box flexDirection="column">
+              {hasCategories ? (
+                <Select
+                  key="entry-category"
+                  label="Kategorie"
+                  options={CATEGORIES.map(c => ({ value: c, label: CATEGORY_LABEL[c] ?? c }))}
+                  value={entryCategory}
+                  onSelect={v => {
+                    entryCategory = v
+                  }}
+                />
+              ) : null}
+              {editor('entry-new-input', undefined, 'entry-new-cancel', 'entry-add', value =>
+                changeChangelog($, (raw, date) => {
+                  const text = cleanText(value).replace(/\n+/g, ' ')
+                  return text === '' ? undefined : addEntry(raw, entryCategory, text, date)
+                }).then(async failed => {
+                  await fail(failed)
+                  await update($, draft, () => null)
+                  return undefined
+                }),
+              )}
+            </Box>
+          ) : null}
+          {editing?.kind === 'release' && canRelease
+            ? editor('release-input', state?.version ?? '', 'release-cancel', 'entry-release', value =>
+                changeChangelog($, (raw, date) => release(raw, value.split('\n')[0] ?? '', date)).then(async failed => {
+                  await fail(failed)
+                  await update($, draft, () => null)
+                  return undefined
+                }),
+              )
+            : null}
+          {editing?.kind === 'release' && canRelease ? (
+            <Text dimColor>Version eintragen, leer lassen für das heutige Datum.</Text>
+          ) : null}
+          {entries.length === 0 ? null : (
+            <Box flexDirection="column">
+              <Text bold>Unreleased</Text>
+              {byCategory.map(cat => (
+                <Box flexDirection="column">
+                  {cat === '' ? null : <Text dimColor>{cat}</Text>}
+                  {entries.map((x, i) => (x.category === cat ? entryRow(x, i) : null))}
+                </Box>
+              ))}
+            </Box>
+          )}
+          {state === null || state.rest === '' ? (
+            state?.file === undefined ? <Text dimColor>Kein Changelog. ＋ legt einen nach Keep a Changelog an.</Text> : null
+          ) : (
+            <Markdown key="changelog-rest" text={clip(state.rest)} />
+          )}
+        </Box>
+      )
+    }
+
     if (current === 'backlog') return backlogView()
+    if (current === 'changelog') return changelogView()
     return todoView()
   })
 }

@@ -850,3 +850,65 @@ test('Backlog: eine einzelne BACKLOG.md wird nur angezeigt', async ($, on) => {
   expect((await ui.find({ type: 'Markdown', key: 'backlog-single' }))?.props.text).toBe('# BACKLOG\n\n## Offen\n\n### Etwas\n')
   await ui.unmount()
 })
+
+// ---- Changelog -----------------------------------------------------------------
+
+const openChangelog = async ($: Engine) => {
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'section-changelog' })
+  return ui
+}
+
+test('Changelog: ohne Datei legt ＋ einen nach Keep a Changelog an; Release mit Version aus package.json', async ($, on) => {
+  engine(on, { files: { [`${REPO}/package.json`]: '{ "name": "app", "version": "1.2.0" }' } })
+  await start($)
+  const ui = await openChangelog($)
+  expect((await ui.find({ type: 'Text', text: /^Kein Changelog/ }))).toBeDefined()
+  await ui.press({ key: 'entry-add' })
+  expect((await ui.find({ type: 'Select', key: 'entry-category' }))?.props.value).toBe('Added')
+  await ui.input({ key: 'entry-new-input', text: 'Reiter Changelog', kind: 'submit' })
+  const made = files[`${REPO}/CHANGELOG.md`] ?? ''
+  expect(made).toContain('[Keep a Changelog](https://keepachangelog.com/en/1.1.0/)')
+  expect(made.endsWith('## [Unreleased]\n\n### Added\n\n- Reiter Changelog\n')).toBe(true)
+  // Release: das Feld ist mit der Version vorbelegt
+  await ui.press({ key: 'entry-release' })
+  expect((await ui.find({ type: 'Input', key: 'release-input' }))?.props.value).toBe('1.2.0')
+  await ui.press({ key: 'release-input-save' })
+  expect(files[`${REPO}/CHANGELOG.md`]).toContain('## [Unreleased]\n\n## [1.2.0] - 2026-11-02\n\n### Added\n\n- Reiter Changelog')
+  await ui.unmount()
+})
+
+test('Changelog: datierte Punkte werden im Stil der Datei fortgeschrieben', async ($, on) => {
+  const ha = '# Changelog — ha\n\n- 2026-10-17: **Updates erledigt.**\n'
+  engine(on, { files: { [`${REPO}/CHANGELOG.md`]: ha } })
+  await start($)
+  const ui = await openChangelog($)
+  await ui.press({ key: 'entry-add' })
+  // Datierte Punkte haben keine Kategorien
+  expect(await ui.find({ type: 'Select', key: 'entry-category' })).toBeUndefined()
+  await ui.input({ key: 'entry-new-input', text: 'Thermostat getauscht', kind: 'submit' })
+  expect(files[`${REPO}/CHANGELOG.md`]).toBe('# Changelog — ha\n\n- 2026-11-02: Thermostat getauscht\n- 2026-10-17: **Updates erledigt.**\n')
+  await ui.unmount()
+})
+
+test('Changelog: CHANGES.md wird nur angezeigt, ein unbekannter Stil ebenso', async ($, on) => {
+  engine(on, { files: { [`${REPO}/CHANGES.md`]: '## 1.0\n\nErste Fassung\n' } })
+  await start($)
+  const ui = await openChangelog($)
+  expect(await ui.find({ type: 'Button', key: 'entry-add' })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown', key: 'changelog-rest' }))?.props.text).toBe('## 1.0\n\nErste Fassung')
+  await ui.unmount()
+})
+
+test('Changelog: Eintrag unter [Unreleased] ändern und löschen', async ($, on) => {
+  const keep = '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Alt\n\n## [1.0.0] - 2026-01-01\n'
+  engine(on, { files: { [`${REPO}/CHANGELOG.md`]: keep } })
+  await start($)
+  const ui = await openChangelog($)
+  await ui.press({ key: 'entry-edit-0' })
+  await ui.input({ key: 'entry-edit-input-0', text: 'Neu', kind: 'submit' })
+  expect(files[`${REPO}/CHANGELOG.md`]).toBe(keep.replace('- Alt', '- Neu'))
+  await ui.press({ key: 'entry-remove-0' })
+  expect(files[`${REPO}/CHANGELOG.md`]).toBe('# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n')
+  await ui.unmount()
+})
