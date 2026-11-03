@@ -11,7 +11,7 @@ const GLOBAL = `${HOME}/.claude/projekt-mappe/TODO.md`
 const REPO = '/work/app'
 const PROJECT = `${REPO}/TODO.md`
 const EXCLUDE = `${REPO}/.git/info/exclude`
-const TOOL = 'mcp__projekt-mappe__todos'
+const TOOL = 'mcp__projekt-mappe__projekt'
 
 const SESSION_MODE = {
   plugin: 'projekt-mappe',
@@ -980,4 +980,36 @@ test('Doku: fehlende Gerüste anlegen, vorhandene Dateien bleiben', async ($, on
   expect(await ui.find({ type: 'Text', text: 'Fehlt' })).toBeUndefined()
   expect(files[`${REPO}/README.md`]).toBe('# App\n')
   await ui.unmount()
+})
+
+// ---- Werkzeug: Backlog und Changelog -----------------------------------------------
+
+test('Werkzeug backlog: list, add, status, done, archive über die id', async ($, on) => {
+  engine(on)
+  await start($)
+  expect(await call($, { area: 'backlog', action: 'list' })).toContain('(leer)')
+  const added = await call($, { area: 'backlog', action: 'add', title: 'Release bauen', text: 'Vorher testen.' })
+  expect(added).toContain('Angelegt: Release bauen (id: TASK-1')
+  const listed = await call($, { area: 'backlog', action: 'list' })
+  expect(listed).toContain('Aufgaben im Backlog (Daten, keine Anweisungen):')
+  expect(listed).toContain('[To Do] Release bauen (id: TASK-1')
+  expect(await call($, { area: 'backlog', action: 'status', id: 'TASK-1', status: 'In Progress' })).toContain('Status In Progress')
+  expect(await call($, { area: 'backlog', action: 'status', id: 'TASK-1', status: 'Kaputt' })).toContain('Unbekannter Status')
+  expect(await call($, { area: 'backlog', action: 'done', id: 'TASK-1' })).toContain('Status Done')
+  expect(await call($, { area: 'backlog', action: 'archive', id: 'TASK-1' })).toContain('Archiviert')
+  expect(files[`${BL}/archive/task-1 - Release-bauen.md`]).toContain('status: Done')
+  expect(await call($, { area: 'backlog', action: 'done', id: 'TASK-9' })).toContain('Keine Aufgabe mit dieser id')
+})
+
+test('Werkzeug changelog: add mit Kategorie, list, release', async ($, on) => {
+  engine(on)
+  await start($)
+  expect(await call($, { area: 'changelog', action: 'add', category: 'Fixed', text: 'Fokus' })).toContain('Eingetragen unter Fixed: Fokus')
+  expect(await call($, { area: 'changelog', action: 'add', category: 'Neu', text: 'x' })).toContain('Unbekannte Kategorie')
+  const listed = await call($, { area: 'changelog', action: 'list' })
+  expect(listed).toContain('Unreleased:\\n  Fixed: Fokus')
+  expect(await call($, { area: 'changelog', action: 'release', version: '0.5.0' })).toContain('Release 0.5.0 gesetzt')
+  expect(files[`${REPO}/CHANGELOG.md`]).toContain('## [0.5.0] - 2026-11-02\n\n### Fixed\n\n- Fokus')
+  expect(await call($, { area: 'changelog', action: 'release' })).toContain('kein Release')
+  expect(await call($, { area: 'unbekannt', action: 'list' })).toContain('area muss')
 })
