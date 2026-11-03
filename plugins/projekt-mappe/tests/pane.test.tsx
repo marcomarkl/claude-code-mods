@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { formatTodoMd, parseTodoMd, withIds } from '../hooks/todo'
+import { itemsOf, parseDoc } from '../hooks/todo'
 import type { TodoItem } from '../types'
 
 const NOW = Date.parse('2026-11-02T10:00:00Z')
@@ -47,6 +47,8 @@ type Setup = {
   git?: string | null | 'throws'
   // Was $.fs.stat außer den Dateien kennt, etwa ein .git-Ordner
   dirs?: Record<string, 'dir' | 'file'>
+  // Dateien, die da sind, sich aber nicht lesen lassen (Leserechte)
+  unreadable?: string[]
   env?: Record<string, string>
   store?: Record<string, unknown>
   files?: Record<string, string>
@@ -59,6 +61,7 @@ function engine(on: On, setup: Setup = {}) {
   root = setup.root ?? REPO
   isPaneOpen = false
   opens = 0
+  const unreadable = setup.unreadable ?? []
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME, ...(setup.env ?? {}) })
   // Speicher als eigene Attrappe, damit die Tests ablesen können, was gemerkt wurde
@@ -80,13 +83,15 @@ function engine(on: On, setup: Setup = {}) {
   })
   on('fs.read', (_, e) => {
     const text = files[e.path]
-    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    if (text === undefined || unreadable.includes(e.path)) throw new Error(`EACCES or ENOENT: ${e.path}`)
     return { value: text }
   })
   on('fs.write', (_, e) => {
     files[e.path] = e.text
     return { value: undefined }
   })
+  // Wie Linux: die Schreibweise zählt
+  on('fs.exists', (_, e) => ({ value: files[e.path] !== undefined || unreadable.includes(e.path) || e.path in (setup.dirs ?? {}) }))
   on('fs.stat', (_, e) => {
     const kind = setup.dirs?.[e.path] ?? (files[e.path] === undefined ? undefined : 'file')
     if (kind === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -115,11 +120,19 @@ function engine(on: On, setup: Setup = {}) {
 
 const start = ($: Engine) => $.session.start({ cwd: REPO, surface: 'desktop', isInteractive: true })
 
+// Eine Datei im Format, das der Mod selbst anlegt
 const fileOf = (items: Array<{ text: string; done?: boolean }>): string =>
-  formatTodoMd(items.map(i => ({ text: i.text, done: i.done ?? false })))
+  items.length === 0
+    ? '# TODO\n'
+    : `# TODO\n\n${items
+        .map(i => {
+          const [first, ...rest] = i.text.split('\n')
+          return [`- [${i.done === true ? 'x' : ' '}] ${first}`, ...rest.map(l => (l === '' ? '' : `  ${l}`))].join('\n')
+        })
+        .join('\n')}\n`
 
 const itemsIn = (path: string): TodoItem[] =>
-  withIds(parseTodoMd(files[path] ?? '') ?? [], path.includes('/projekt-mappe/') ? 'global' : 'project')
+  itemsOf(parseDoc(files[path] ?? ''), path.includes('/projekt-mappe/') ? 'global' : 'project')
 
 // Die id eines Eintrags, wie der Mod sie beim Lesen bildet
 const idIn = (path: string, text: string, n = 0) => itemsIn(path).filter(i => i.text === text)[n]?.id ?? ''
@@ -129,41 +142,147 @@ type Drawing = Mounted<'terminal' | 'desktop', 'Pane'>
 const texts = async (ui: Drawing) =>
   (await ui.findAll({ type: 'Text' })).map(t => String(t.text)).filter(t => t !== '' && t !== 'modus')
 
-// ---- TODO.md -------------------------------------------------------------------
+const call = async ($: Engine, input: Record<string, unknown>) =>
+  JSON.stringify(await $.tool.call({ tool: TOOL, ...input } as never))
 
-test('TODO.md: Rundlauf, auch mehrzeilig mit Leerzeile; die Formen der Konvertierung', async () => {
-  for (const text of [
-    '# TODO\n',
-    '# TODO\n\n- [ ] FTP\n',
-    '# TODO\n\n- [ ] Adobe-Abo: Die restlichen Credits aufbrauchen und Abo kündigen\n',
-    '# TODO\n\n- [ ] A\n- [ ] Mehrzeilig\n  zweite Zeile\n\n  nach Leerzeile\n- [x] B\n',
-  ]) {
-    expect(formatTodoMd(parseTodoMd(text) ?? [])).toBe(text)
-  }
-  expect(parseTodoMd('# TODO\n\n- [ ] FTP\n')).toEqual([{ text: 'FTP', done: false }])
-  expect(parseTodoMd('# TODO\n\n- [ ] Adobe-Abo: Die restlichen Credits aufbrauchen und Abo kündigen\n')).toEqual([
-    { text: 'Adobe-Abo: Die restlichen Credits aufbrauchen und Abo kündigen', done: false },
-  ])
+// ---- Toleranz: Marcos echte Dateiformen ------------------------------------------
+
+// Gekürzt aus kc-social-media-assistant/TODO.md: Einleitung, erledigte und offene Einträge
+const SOCIAL = [
+  '# TODO',
+  '',
+  'Offene Punkte des Projekts. Erledigtes mit Datum abhaken und im Commit nennen.',
+  '',
+  '- [x] **Conversions API prüfen** (erledigt 2026-10-13: kein Handlungsbedarf.)',
+  '- [ ] **Verschobene Kundenmeinung Laura prüfen** (offen seit 2026-10-24)',
+  '- [ ] **Erste Google-Business-Veranstaltung prüfen** (offen seit 2026-10-25)',
+  '',
+].join('\n')
+
+// Gekürzt aus ha-assistant/todo.md: Abschnitte, Bullets ohne Checkbox
+const HA = [
+  '# TODO — ha-assistant',
+  '',
+  'Stand: 2026-09-19.',
+  '',
+  '## Claude Offen',
+  '- **Hydraulischer Abgleich** (Claude, Ansage Marco 2026-09-11)',
+  '',
+  '## Marco Offen',
+  '- **BEG klären**',
+  '',
+].join('\n')
+
+// Gekürzt aus video-assistent/TODO.md: reiner Fließtext
+const VIDEO = '# Offene Abnahmen\n\nAus dem Aufbau des Video-Assistenten, auf später verschoben.\n\n- **Eigener „Pixar Look“** — **zurückgestellt**\n'
+
+test('Toleranz: Einleitung und Checkboxen; Abhaken ändert nur das Zeichen in [ ]', async ($, on) => {
+  engine(on, { files: { [PROJECT]: SOCIAL } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^⚠/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 2')
+  // Die Einleitung steht gerendert unter der Liste
+  expect((await ui.find({ type: 'Markdown', key: 'todo-foreign' }))?.props.text).toBe(
+    '# TODO\n\nOffene Punkte des Projekts. Erledigtes mit Datum abhaken und im Commit nennen.',
+  )
+  const laura = itemsIn(PROJECT)[1]?.id ?? ''
+  await ui.press({ key: `todo-toggle-${laura}` })
+  expect(files[PROJECT]).toBe(SOCIAL.replace('- [ ] **Verschobene', '- [x] **Verschobene'))
+  await ui.unmount()
 })
 
-for (const [what, foreign] of [
-  ['Abschnitt', '# TODO\n\n## Offen\n\n- [ ] A\n'],
-  ['Fließtext', '# TODO — Projekt\n\nTracking-Liste für offene Aufgaben.\n'],
-  ['Tabelle', '# TODO\n\n| a | b |\n|---|---|\n'],
-] as const) {
-  test(`TODO.md: fremde Datei (${what}) bleibt unverändert und gesperrt`, async ($, on) => {
-    engine(on, { files: { [PROJECT]: foreign } })
-    await start($)
-    expect(await call($, { action: 'add', text: 'neu' })).toContain('nicht lesbar')
-    expect(files[PROJECT]).toBe(foreign)
-  })
-}
+test('Toleranz: Abschnitte ohne Checkboxen bleiben stehen, neu kommt ans Ende', async ($, on) => {
+  engine(on, { files: { [PROJECT]: HA } })
+  await start($)
+  expect(itemsIn(PROJECT)).toEqual([])
+  expect(await call($, { action: 'add', text: 'neu' })).toContain('Angelegt')
+  expect(files[PROJECT]).toBe(`${HA}\n- [ ] neu\n`)
+})
 
-test('TODO.md: tolerant lesen (BOM, CRLF, * und +, [X]), kanonisch schreiben', async ($, on) => {
+test('Toleranz: reiner Fließtext wird angezeigt, nicht gesperrt', async ($, on) => {
+  engine(on, { files: { [PROJECT]: VIDEO } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^⚠/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown', key: 'todo-foreign' }))?.props.text).toBe(VIDEO.trim())
+  await ui.unmount()
+})
+
+test('Toleranz: Rundlauf ohne Änderung ist zeichengleich, auch mit BOM und CRLF', async () => {
+  for (const raw of [SOCIAL, HA, VIDEO, '', '# TODO\n', '﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n']) {
+    const doc = parseDoc(raw)
+    expect(`${doc.bom ? '﻿' : ''}${doc.lines.join(doc.eol)}`).toBe(raw)
+  }
+})
+
+test('Toleranz: BOM, CRLF und Aufzählungszeichen bleiben beim Anlegen erhalten', async ($, on) => {
   engine(on, { files: { [PROJECT]: '﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n' } })
   await start($)
   await call($, { action: 'add', text: 'neu' })
-  expect(files[PROJECT]).toBe('# TODO\n\n- [ ] Plus\n- [ ] neu\n- [x] Groß\n')
+  expect(files[PROJECT]).toBe('﻿# TODO\r\n\r\n* [X] Groß\r\n+ [ ] Plus\r\n* [ ] neu\r\n')
+})
+
+test('Toleranz: Checkboxen im Codeblock sind kein Eintrag', async () => {
+  const doc = parseDoc('# TODO\n\n- [ ] echt\n\n```\n- [ ] Beispiel\n```\n')
+  expect(itemsOf(doc, 'project').map(i => i.text)).toEqual(['echt'])
+})
+
+test('Toleranz: eingerückte Checkbox ist eine eigene Unteraufgabe', async () => {
+  const doc = parseDoc('- [ ] Eltern\n  mit Notiz\n  - [ ] Kind\n- [ ] Nächster\n')
+  expect(itemsOf(doc, 'project').map(i => [i.text, i.depth])).toEqual([
+    ['Eltern\nmit Notiz', 0],
+    ['Kind', 1],
+    ['Nächster', 0],
+  ])
+})
+
+test('Toleranz: verschieben nur innerhalb eines Abschnitts', async ($, on) => {
+  const raw = '# TODO\n\n## A\n- [ ] eins\n- [ ] zwei\n\n## B\n- [ ] drei\n'
+  engine(on, { files: { [PROJECT]: raw } })
+  await start($)
+  expect(await call($, { action: 'move', id: idIn(PROJECT, 'drei'), direction: 'up' })).toContain('Lässt sich nicht weiter')
+  expect(files[PROJECT]).toBe(raw)
+  expect(await call($, { action: 'move', id: idIn(PROJECT, 'zwei'), direction: 'up' })).toContain('Verschoben nach oben')
+  expect(files[PROJECT]).toBe('# TODO\n\n## A\n- [ ] zwei\n- [ ] eins\n\n## B\n- [ ] drei\n')
+})
+
+test('Toleranz: [-] ist abgelehnt, gedimmt und zählt nicht als offen', async ($, on) => {
+  engine(on, { files: { [PROJECT]: '# TODO\n\n- [ ] offen\n- [-] abgelehnt\n' } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Button', key: 'todo-tab-project' }))?.props.label).toBe('📁 1')
+  expect((await ui.find({ type: 'Text', text: 'abgelehnt' }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('Toleranz: todo.md in Kleinschreibung wird gefunden, wenn TODO.md fehlt', async ($, on) => {
+  engine(on, { files: { [`${REPO}/todo.md`]: '- [ ] klein\n' } })
+  await start($)
+  await call($, { action: 'add', text: 'neu' })
+  expect(files[`${REPO}/todo.md`]).toBe('- [ ] klein\n- [ ] neu\n')
+  expect(files[PROJECT]).toBeUndefined()
+})
+
+test('Gesperrt nur, wenn die Datei da, aber nicht lesbar ist', async ($, on) => {
+  engine(on, { files: { [PROJECT]: 'binär\u0000' } })
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^⚠/ }))?.text).toBe(`⚠ ${PROJECT}`)
+  expect(await ui.find({ type: 'Button', key: 'todo-add' })).toBeUndefined()
+  expect(await call($, { action: 'add', text: 'neu' })).toContain('nicht lesbar')
+  expect(files[PROJECT]).toBe('binär\u0000')
+  // Die globale Liste fehlt und ist leer, aber bedienbar
+  await ui.press({ key: 'todo-tab-global' })
+  expect(await ui.find({ type: 'Button', key: 'todo-add' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Gesperrt auch ohne Leserechte; die Datei bleibt unangetastet', async ($, on) => {
+  engine(on, { files: { [PROJECT]: '- [ ] A\n' }, unreadable: [PROJECT] })
+  await start($)
+  expect(await call($, { action: 'clear_done' })).toContain('nicht lesbar')
+  expect(files[PROJECT]).toBe('- [ ] A\n')
 })
 
 test('TODO.md: gleiche Texte haben getrennte ids, auch über die Listen hinweg', async ($, on) => {
@@ -317,7 +436,7 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
   const id = (text: string) => idIn(PROJECT, text)
   const multi = 'C\nmit Umbruch\n\nEnde'
 
-  // Neu: ans Ende der offenen, mehrzeiliges Feld, Umbrüche bleiben, Folgezeilen eingerückt
+  // Neu: hinter den letzten Eintrag, mehrzeiliges Feld, Umbrüche bleiben, Folgezeilen eingerückt
   await ui.press({ key: 'todo-add' })
   expect((await ui.find({ type: 'Input' }))?.props.rows).toBe(3)
   await ui.input({ key: 'todo-new-input', text: 'C  \r\nmit Umbruch\n\n\n\nEnde', kind: 'submit' })
@@ -336,31 +455,31 @@ test('Pane: neu, ändern, abhaken, wieder öffnen, verschieben, löschen, aufrä
   await ui.input({ key: `todo-edit-input-${b}`, text: 'B2', kind: 'submit' })
   expect(itemsIn(PROJECT)[1]?.text).toBe('B2')
 
-  // Abhaken: gedimmt ans Ende
+  // Abhaken: die Zeile bleibt in der Datei an ihrem Platz, im Pane gedimmt unten
   const a = id('A')
   await ui.press({ key: `todo-toggle-${a}` })
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2', multi, 'A✓'])
+  expect(files[PROJECT]).toBe('# TODO\n\n- [x] A\n- [ ] B2\n- [ ] C\n  mit Umbruch\n\n  Ende\n')
+  expect(await texts(ui)).toEqual(['B2', multi, 'A'])
   expect((await ui.find({ type: 'Text', text: 'A' }))?.props.dimColor).toBe(true)
-  expect(files[PROJECT]?.endsWith('- [x] A\n')).toBe(true)
   // Erledigte lassen sich nicht ändern oder verschieben
   expect(await ui.find({ type: 'Button', key: `todo-edit-${a}` })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `todo-up-${a}` })).toBeUndefined()
 
-  // Verschieben: der oberste ohne ↑, der unterste offene ohne ↓
+  // Verschieben: nur mit einem offenen Nachbarn
   const c = id(multi)
   const b2 = id('B2')
   expect(await ui.find({ type: 'Button', key: `todo-up-${b2}` })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `todo-down-${c}` })).toBeUndefined()
   await ui.press({ key: `todo-up-${c}` })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual([multi, 'B2', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', multi, 'B2'])
 
-  // Wieder öffnen: ans Ende der offenen
+  // Wieder öffnen: an Ort und Stelle
   await ui.press({ key: `todo-toggle-${a}` })
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual([multi, 'B2', 'A'])
+  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['A', multi, 'B2'])
 
   // Löschen ohne Rückfrage
   await ui.press({ key: `todo-remove-${b2}` })
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual([multi, 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', multi])
 
   // Aufräumen: nur da, wenn es Erledigte gibt; entfernt sie alle
   expect(await ui.find({ type: 'Button', key: 'todo-clear' })).toBeUndefined()
@@ -388,7 +507,6 @@ test('Pane: Speichern unter dem Feld übernimmt das Getippte', async ($, on) => 
   await start($)
   const a = idIn(PROJECT, 'A')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  // Neu: tippen, dann Speichern
   await ui.press({ key: 'todo-add' })
   const save = await ui.find({ type: 'Button', key: 'todo-new-input-save' })
   expect(save?.props.label).toBe('Speichern')
@@ -445,7 +563,6 @@ test('Pane: Getipptes übersteht ein Neuzeichnen, der Fokus wird nur einmal gese
   const input = await ui.find({ type: 'Input' })
   expect(input?.props.value).toBe('A geändert')
   expect(input?.props.autoFocus).toBeUndefined()
-  // Abbrechen und erneut öffnen: wieder mit Fokus und dem gespeicherten Text
   await ui.press({ key: `todo-edit-cancel-${a}` })
   await ui.press({ key: `todo-edit-${a}` })
   expect((await ui.find({ type: 'Input' }))?.props.autoFocus).toBe(true)
@@ -471,21 +588,6 @@ test('Fokus nicht verfügbar: Neu anlegen, Bearbeiten und Abbrechen klappen trot
   await ui.press({ key: `todo-edit-input-${a}-save` })
   expect(await ui.find({ type: 'Input' })).toBeUndefined()
   expect(itemsIn(PROJECT)[0]?.text).toBe('A')
-  await ui.unmount()
-})
-
-test('Fehlende Datei ist eine leere Liste; fremde wird nicht überschrieben und ist gesperrt', async ($, on) => {
-  engine(on, { files: { [PROJECT]: '{ kaputt' } })
-  await start($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /^⚠/ }))?.text).toBe(`⚠ ${PROJECT}`)
-  expect(await ui.find({ type: 'Button', key: 'todo-add' })).toBeUndefined()
-  const added = await $.tool.call({ tool: TOOL, action: 'add', text: 'neu' } as never)
-  expect(JSON.stringify(added)).toContain('nicht lesbar')
-  expect(files[PROJECT]).toBe('{ kaputt')
-  // Die globale Liste fehlt und ist leer, aber bedienbar
-  await ui.press({ key: 'todo-tab-global' })
-  expect(await ui.find({ type: 'Button', key: 'todo-add' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -559,9 +661,6 @@ test('Werkzeug: list kennzeichnet Daten, add legt standardmäßig im Projekt an'
   )
 })
 
-const call = async ($: Engine, input: Record<string, unknown>) =>
-  JSON.stringify(await $.tool.call({ tool: TOOL, ...input } as never))
-
 test('Werkzeug: ändern, abhaken, wieder öffnen, verschieben, löschen über die id', async ($, on) => {
   engine(on, {
     files: {
@@ -582,14 +681,13 @@ test('Werkzeug: ändern, abhaken, wieder öffnen, verschieben, löschen über di
 
   const a = id('A')
   expect(await call($, { action: 'done', id: a })).toContain('Abgehakt: A')
-  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['B2\nneu', 'C', 'A✓'])
+  expect(itemsIn(PROJECT).map(i => `${i.text}${i.done ? '✓' : ''}`)).toEqual(['A✓', 'B2\nneu', 'C'])
   expect(await call($, { action: 'done', id: a })).toContain('Schon erledigt: A')
   expect(await call($, { action: 'reopen', id: a })).toContain('Wieder geöffnet: A')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'C', 'A'])
 
-  expect(await call($, { action: 'move', id: a, direction: 'up' })).toContain('Verschoben nach oben: A')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'A', 'C'])
-  expect(await call($, { action: 'move', id: id('B2\nneu'), direction: 'up' })).toContain('Steht schon ganz oben')
+  expect(await call($, { action: 'move', id: id('C'), direction: 'up' })).toContain('Verschoben nach oben: C')
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'C', 'B2\nneu'])
+  expect(await call($, { action: 'move', id: a, direction: 'up' })).toContain('Lässt sich nicht weiter nach oben')
   expect(await call($, { action: 'move', id: a, direction: 'seitwärts' })).toContain('direction muss')
 
   // Die id findet auch Einträge der globalen Liste
@@ -597,7 +695,7 @@ test('Werkzeug: ändern, abhaken, wieder öffnen, verschieben, löschen über di
   expect(itemsIn(GLOBAL)[0]?.done).toBe(true)
 
   expect(await call($, { action: 'remove', id: id('C') })).toContain('Gelöscht: C')
-  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['B2\nneu', 'A'])
+  expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A', 'B2\nneu'])
 })
 
 test('Werkzeug: list rückt Folgezeilen mehrzeiliger Einträge ein', async ($, on) => {
@@ -623,13 +721,6 @@ test('Werkzeug: clear_done entfernt die Erledigten einer Liste', async ($, on) =
   await start($)
   expect(await call($, { action: 'clear_done' })).toContain('2 erledigte Einträge aus der Projekt-Liste entfernt')
   expect(itemsIn(PROJECT).map(i => i.text)).toEqual(['A'])
-})
-
-test('Werkzeug: gesperrte Liste wird auch über das Werkzeug nicht geändert', async ($, on) => {
-  engine(on, { files: { [PROJECT]: '{ kaputt' } })
-  await start($)
-  expect(await call($, { action: 'clear_done' })).toContain('nicht lesbar')
-  expect(files[PROJECT]).toBe('{ kaputt')
 })
 
 test('Werkzeug: leerer Text abgelehnt, Umbruch bleibt, über 500 Zeichen gekürzt', async ($, on) => {

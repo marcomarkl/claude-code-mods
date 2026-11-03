@@ -9,6 +9,13 @@ export type TodoItem = {
   text: string
   /** Wahr, wenn abgehakt. */
   done: boolean
+  /** todo-md `[-]`: abgelehnt; zählt nicht als offen. */
+  declined?: true
+  /** 0 oben in der Liste, 1 eingerückt (Unteraufgabe). */
+  depth: number
+  /** Mit dem Nachbarn darüber bzw. darunter tauschbar (offen, gleich tief, kein Fremdinhalt dazwischen). */
+  canUp?: true
+  canDown?: true
 }
 
 /** Welche Liste: über alle Projekte oder die des aktuellen Projekts. */
@@ -17,6 +24,8 @@ export type Scope = 'global' | 'project'
 /** Eine gelesene Liste. */
 export type ListState = {
   items: TodoItem[]
+  /** Was in der Datei nicht zu einem Eintrag gehört (Einleitung, Abschnitte), zum Anzeigen. */
+  foreign?: string
   /** Pfad der Datei, wenn sie da ist, aber nicht lesbar: dann ist die Liste gesperrt. */
   error?: string
 }

@@ -2,8 +2,21 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Draft, ListState, Lists, Paths, Scope, TodoItem, UiState } from '../types'
-import { cleanText, formatTodoMd, parseTodoMd, withIds } from './todo'
-import type { Entry } from './todo'
+import {
+  addUnit,
+  canMove,
+  cleanText,
+  clearDoneUnits,
+  editUnit,
+  foreignOf,
+  itemsOf,
+  moveUnit,
+  parseDoc,
+  removeUnit,
+  serialize,
+  toggleUnit,
+} from './todo'
+import type { TodoDoc } from './todo'
 
 const PANE = 'projekt-mappe'
 const COMMAND = 'projekt-mappe'
@@ -57,7 +70,7 @@ async function resolvePaths($: EngineInterface): Promise<Paths> {
     const commonDir = git.stdout.trim()
     if (git.exitCode === 0 && commonDir.endsWith('/.git')) {
       const main = commonDir.slice(0, -'/.git'.length)
-      return { root, global, project: `${main}/TODO.md`, exclude: `${commonDir}/info/exclude` }
+      return { root, global, project: await todoFile($, main), exclude: `${commonDir}/info/exclude` }
     }
   } catch {
     // Kein Git: die Projektwurzel
@@ -68,9 +81,17 @@ async function resolvePaths($: EngineInterface): Promise<Paths> {
   return {
     root,
     global,
-    project: `${root}/TODO.md`,
+    project: await todoFile($, root),
     ...(dotGit?.kind === 'dir' ? { exclude: `${root}/.git/info/exclude` } : {}),
   }
+}
+
+// TODO.md, sonst eine vorhandene todo.md (Linux unterscheidet die Schreibweise); neu: TODO.md
+async function todoFile($: EngineInterface, dir: string): Promise<string> {
+  const upper = `${dir}/TODO.md`
+  const lower = `${dir}/todo.md`
+  if (await $.fs.exists(upper).catch(() => false)) return upper
+  return (await $.fs.exists(lower).catch(() => false)) ? lower : upper
 }
 
 async function currentPaths($: EngineInterface): Promise<Paths> {
@@ -81,21 +102,37 @@ async function currentPaths($: EngineInterface): Promise<Paths> {
   return found
 }
 
-// Eine fehlende Datei ist eine leere Liste. Eine fremde wird nie überschrieben:
-// die Liste ist gesperrt, bis die Datei wieder dem Format entspricht.
-async function readList($: EngineInterface, path: string, scope: Scope): Promise<ListState> {
+// Eine fehlende Datei ist eine leere Liste. Gesperrt ist eine Liste nur, wenn die Datei da,
+// aber nicht als Text lesbar ist (Leserechte, Binärdaten); jedes Format ist lesbar.
+async function readDoc($: EngineInterface, path: string): Promise<TodoDoc | { error: string }> {
   let text: string
   try {
     text = (await $.fs.read(path)) as string
   } catch {
-    return { items: [] }
+    return (await $.fs.exists(path).catch(() => false)) ? { error: path } : parseDoc('')
   }
-  const entries = parseTodoMd(text)
-  return entries === undefined ? { items: [], error: path } : { items: withIds(entries, scope) }
+  return text.includes('\u0000') ? { error: path } : parseDoc(text)
 }
 
-// Offene vor erledigten, die Reihenfolge innerhalb bleibt
-const ordered = (items: readonly TodoItem[]) => [...items.filter(i => !i.done), ...items.filter(i => i.done)]
+const listOf = (doc: TodoDoc, scope: Scope): ListState => {
+  const items = itemsOf(doc, scope).map((item, at) => ({
+    ...item,
+    ...(canMove(doc, at, -1) ? { canUp: true as const } : {}),
+    ...(canMove(doc, at, 1) ? { canDown: true as const } : {}),
+  }))
+  const foreign = foreignOf(doc)
+  return foreign === '' ? { items } : { items, foreign }
+}
+
+async function readList($: EngineInterface, path: string, scope: Scope): Promise<ListState> {
+  const doc = await readDoc($, path)
+  return 'error' in doc ? { items: [], error: doc.error } : listOf(doc, scope)
+}
+
+// Eine Zeichnung fasst 100 000 Zeichen; längere Texte gekürzt, mit Hinweis
+const MAX_VIEW = 90_000
+const clip = (text: string) =>
+  text.length <= MAX_VIEW ? text : `${text.slice(0, MAX_VIEW)}\n\n*… gekürzt, ${text.length} Zeichen*`
 
 // So viele Zeilen hat das Eingabefeld; Enter speichert, Shift+Enter bricht um
 const INPUT_ROWS = 3
@@ -135,83 +172,70 @@ async function ensureExcluded($: EngineInterface, exclude: string) {
 }
 
 // Lesen, ändern, schreiben: jede Aktion wirkt auf den aktuellen Dateistand, damit sich
-// mehrere Sitzungen nicht gegenseitig zurücksetzen. Liefert den geschriebenen Stand mit
-// seinen ids; undefined, wenn die Liste gesperrt ist.
+// mehrere Sitzungen nicht gegenseitig zurücksetzen. fn bekommt das Dokument und die Stelle der
+// Einheit mit dieser id (-1, wenn es sie nicht gibt) und liefert das geänderte Dokument.
+// Liefert die Einträge danach; undefined, wenn die Liste gesperrt ist.
 async function change(
   $: EngineInterface,
   scope: Scope,
-  fn: (items: TodoItem[]) => TodoItem[],
+  id: string | undefined,
+  fn: (doc: TodoDoc, at: number) => TodoDoc,
 ): Promise<TodoItem[] | undefined> {
   const p = await currentPaths($)
-  const current = await readList($, p[scope], scope)
-  if (current.error !== undefined) {
+  const doc = await readDoc($, p[scope])
+  if ('error' in doc) {
     await refresh($)
     return undefined
   }
-  const entries: Entry[] = ordered(fn(current.items)).map(i => ({ text: i.text, done: i.done }))
-  await $.fs.write(p[scope], formatTodoMd(entries))
-  if (scope === 'project' && p.exclude !== undefined) await ensureExcluded($, p.exclude)
+  const at = id === undefined ? -1 : itemsOf(doc, scope).findIndex(i => i.id === id)
+  const next = fn(doc, at)
+  const text = serialize(next)
+  if (text !== serialize(doc)) {
+    await $.fs.write(p[scope], text)
+    if (scope === 'project' && p.exclude !== undefined) await ensureExcluded($, p.exclude)
+  }
   await refresh($)
-  return withIds(entries, scope)
+  return itemsOf(next, scope)
 }
 
 // ---- Aktionen ----------------------------------------------------------------
 
-// Neu am Ende der offenen; bei gleichem Text ist der neue der letzte offene mit diesem Text
+// Neu hinter die letzte Einheit: der neue Eintrag ist danach der letzte
 async function addItem($: EngineInterface, scope: Scope, raw: string): Promise<TodoItem | undefined> {
   const text = cleanText(raw)
   if (text === '') return undefined
-  const written = await change($, scope, items => [...items, { id: '', text, done: false }])
-  const same = written?.filter(i => !i.done && i.text === text) ?? []
-  return same[same.length - 1]
+  const written = await change($, scope, undefined, doc => addUnit(doc, text))
+  return written?.[written.length - 1]
 }
 
 // Liefert die neue id: sie hängt am Text. Undefined bei leerem Text oder gesperrter Liste.
 async function editItem($: EngineInterface, scope: Scope, id: string, raw: string): Promise<string | undefined> {
   const text = cleanText(raw)
   if (text === '') return undefined
-  let at = -1
-  const written = await change($, scope, items => {
-    const edited = items.map(i => (i.id === id ? { ...i, text } : i))
-    at = ordered(edited).findIndex(i => i.id === id)
-    return edited
+  let pos = -1
+  const written = await change($, scope, id, (doc, at) => {
+    pos = at
+    return at < 0 ? doc : editUnit(doc, at, text)
   })
-  return written?.[at]?.id
+  return pos < 0 ? undefined : written?.[pos]?.id
 }
 
-// Abhaken rutscht ans Ende der erledigten, wieder öffnen ans Ende der offenen
+// Abhaken und wieder öffnen: die Zeile bleibt an ihrem Platz
 async function toggleItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
-  const written = await change($, scope, items => {
-    const item = items.find(i => i.id === id)
-    if (item === undefined) return items
-    return [...items.filter(i => i.id !== id), { ...item, done: !item.done }]
-  })
-  return written !== undefined
+  return (await change($, scope, id, (doc, at) => (at < 0 ? doc : toggleUnit(doc, at)))) !== undefined
 }
 
-// Innerhalb der offenen eine Stelle nach oben oder unten
+// Mit dem Nachbarn tauschen, wenn kein Fremdinhalt dazwischen liegt
 async function moveItem($: EngineInterface, scope: Scope, id: string, by: -1 | 1): Promise<boolean> {
-  const written = await change($, scope, items => {
-    const open = items.filter(i => !i.done)
-    const at = open.findIndex(i => i.id === id)
-    const to = at + by
-    if (at < 0 || to < 0 || to >= open.length) return items
-    const a = open[at]
-    const b = open[to]
-    if (a === undefined || b === undefined) return items
-    open[at] = b
-    open[to] = a
-    return [...open, ...items.filter(i => i.done)]
-  })
-  return written !== undefined
+  return (await change($, scope, id, (doc, at) => (at < 0 ? doc : moveUnit(doc, at, by)))) !== undefined
 }
 
 async function removeItem($: EngineInterface, scope: Scope, id: string): Promise<boolean> {
-  return (await change($, scope, items => items.filter(i => i.id !== id))) !== undefined
+  return (await change($, scope, id, (doc, at) => (at < 0 ? doc : removeUnit(doc, at)))) !== undefined
 }
 
 async function clearDone($: EngineInterface, scope: Scope): Promise<boolean> {
-  return (await change($, scope, items => items.filter(i => !i.done))) !== undefined
+  return (await change($, scope, undefined, doc => clearDoneUnits(doc))) !== undefined
 }
 
 // ---- Pane und Zustand --------------------------------------------------------
@@ -255,7 +279,9 @@ async function setTab($: EngineInterface, scope: Scope) {
   await saveUi($)
 }
 
-const openCount = (l: Lists | null, scope: Scope) => (l === null ? 0 : l[scope].items.filter(i => !i.done).length)
+// Offen ist, was weder erledigt noch abgelehnt ist
+const isOpenItem = (i: TodoItem) => !i.done && i.declined !== true
+const openCount = (l: Lists | null, scope: Scope) => (l === null ? 0 : l[scope].items.filter(isOpenItem).length)
 
 // ---- Werkzeug für Claude -------------------------------------------------------
 
@@ -334,11 +360,11 @@ async function runTool($: EngineInterface, input: ToolInput): Promise<ToolAnswer
     }
     case 'move': {
       if (input.direction !== 'up' && input.direction !== 'down') return { deny: 'direction muss "up" oder "down" sein.' }
-      if (item.done) return { deny: 'Erledigte Einträge lassen sich nicht verschieben.' }
-      const open = (await read($, lists))?.[scope].items.filter(i => !i.done) ?? []
-      const at = open.findIndex(i => i.id === item.id)
-      if ((input.direction === 'up' && at <= 0) || (input.direction === 'down' && at >= open.length - 1)) {
-        return { result: `Steht schon ganz ${input.direction === 'up' ? 'oben' : 'unten'}: ${item.text}` }
+      if (!isOpenItem(item)) return { deny: 'Erledigte und abgelehnte Einträge lassen sich nicht verschieben.' }
+      if ((input.direction === 'up' && item.canUp !== true) || (input.direction === 'down' && item.canDown !== true)) {
+        return {
+          result: `Lässt sich nicht weiter nach ${input.direction === 'up' ? 'oben' : 'unten'} schieben (Listenrand oder anderer Abschnitt): ${item.text}`,
+        }
       }
       if (!(await moveItem($, scope, item.id, input.direction === 'up' ? -1 : 1))) return { deny: LOCKED }
       return { result: `Verschoben nach ${input.direction === 'up' ? 'oben' : 'unten'}: ${item.text}` }
@@ -475,12 +501,12 @@ export const register: Register = on => {
     }
     const list = l?.[scope] ?? { items: [] }
     const isLocked = list.error !== undefined
-    const openItems = list.items.filter(i => !i.done)
-    const doneItems = list.items.filter(i => i.done)
+    const openItems = list.items.filter(isOpenItem)
+    const doneItems = list.items.filter(i => !isOpenItem(i))
 
     // Mobil gibt es kein Eingabefeld: dort nur abhaken und löschen
     if (e.surface === 'mobile') {
-      const { Box, Text, Button } = $.ui.resolve(e)
+      const { Box, Text, Button, Markdown } = $.ui.resolve(e)
       return (
         <Box flexDirection="column" rowGap={1}>
           <Box flexDirection="row" columnGap={1}>
@@ -498,8 +524,8 @@ export const register: Register = on => {
             {list.items.map(item => (
               <Box flexDirection="row" alignItems="center" columnGap={1}>
                 <Button key={`todo-toggle-${item.id}`} plain label={item.done ? ICON.done : ICON.open} onPress={() => void toggleItem($, scope, item.id)} />
-                <Box flexGrow={1} flexShrink={1}>
-                  <Text dimColor={item.done} strikethrough={item.done}>
+                <Box flexGrow={1} flexShrink={1} {...(item.depth > 0 ? { marginLeft: 2 } : {})}>
+                  <Text dimColor={!isOpenItem(item)} strikethrough={item.done}>
                     {item.text}
                   </Text>
                 </Box>
@@ -507,11 +533,12 @@ export const register: Register = on => {
               </Box>
             ))}
           </Box>
+          {list.foreign === undefined ? null : <Markdown key="todo-foreign" text={clip(list.foreign)} dimColor />}
         </Box>
       )
     }
 
-    const { Box, Text, Button, Input } = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
     // Aktionen einer Zeile: ohne Rahmen, gedimmt, unter dem Zeiger voll sichtbar
     const action = (key: string, label: string, onPress: () => void) => (
       <Button key={key} plain dimColor label={label} onPress={onPress} />
@@ -576,10 +603,9 @@ export const register: Register = on => {
           }),
         )
       }
-      const at = openItems.findIndex(i => i.id === item.id)
-      const canEdit = !item.done && !isLocked
+      const canEdit = isOpenItem(item) && !isLocked
       return (
-        <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
+        <Box flexDirection="row" alignItems="flex-start" columnGap={1} {...(item.depth > 0 ? { marginLeft: 2 } : {})}>
           <Button
             key={`todo-toggle-${item.id}`}
             plain
@@ -587,7 +613,7 @@ export const register: Register = on => {
             onPress={() => void toggleItem($, scope, item.id)}
           />
           <Box flexGrow={1} flexShrink={1}>
-            <Text dimColor={item.done} strikethrough={item.done}>
+            <Text dimColor={!isOpenItem(item)} strikethrough={item.done}>
               {item.text}
             </Text>
           </Box>
@@ -598,8 +624,8 @@ export const register: Register = on => {
                 )
               })
             : null}
-          {canEdit && at > 0 ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
-          {canEdit && at >= 0 && at < openItems.length - 1
+          {canEdit && item.canUp === true ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
+          {canEdit && item.canDown === true
             ? action(`todo-down-${item.id}`, ICON.down, () => void moveItem($, scope, item.id, 1))
             : null}
           {isLocked ? null : action(`todo-remove-${item.id}`, ICON.remove, () => void removeItem($, scope, item.id))}
@@ -623,7 +649,7 @@ export const register: Register = on => {
             ))}
           </Box>
           <Box flexDirection="row" columnGap={2}>
-            {isLocked || doneItems.length === 0 ? null : (
+            {isLocked || !doneItems.some(i => i.done) ? null : (
               <Button key="todo-clear" plain dimColor label={ICON.clear} onPress={() => void clearDone($, scope)} />
             )}
             {isLocked ? null : (
@@ -654,6 +680,8 @@ export const register: Register = on => {
         )}
         {/* Erledigte als eigener Block darunter */}
         {doneItems.length === 0 ? null : <Box flexDirection="column">{doneItems.map(row)}</Box>}
+        {/* Was nicht zu einem Eintrag gehört (Einleitung, Abschnitte, Fließtext), gerendert */}
+        {list.foreign === undefined ? null : <Markdown key="todo-foreign" text={clip(list.foreign)} dimColor />}
       </Box>
     )
   })
