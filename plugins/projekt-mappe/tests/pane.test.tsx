@@ -53,7 +53,12 @@ type Setup = {
   store?: Record<string, unknown>
   files?: Record<string, string>
   isPlaced?: boolean
+  // mv und git mv scheitern (etwa fehlende Rechte)
+  mvFails?: boolean
 }
+
+// Jeder Aufruf von $.process.run, zum Ablesen
+let runs: string[][] = []
 
 function engine(on: On, setup: Setup = {}) {
   files = { ...(setup.files ?? {}) }
@@ -61,6 +66,7 @@ function engine(on: On, setup: Setup = {}) {
   root = setup.root ?? REPO
   isPaneOpen = false
   opens = 0
+  runs = []
   const unreadable = setup.unreadable ?? []
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME, ...(setup.env ?? {}) })
@@ -72,7 +78,19 @@ function engine(on: On, setup: Setup = {}) {
   })
   const git = setup.git === undefined ? `${REPO}/.git` : setup.git
   on('session.root', () => ({ value: root }))
-  on('process.run', () => {
+  const ok = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  on('process.run', (_, e) => {
+    const argv = [...e.argv]
+    runs.push(argv)
+    if (argv[0] === 'mkdir') return { value: ok }
+    // git mv -- von nach / mv -- von nach: die Datei im Speicher umziehen
+    if ((argv[0] === 'git' && argv[1] === 'mv') || argv[0] === 'mv') {
+      const [from = '', to = ''] = argv.slice(argv.indexOf('--') + 1)
+      if (setup.mvFails === true || files[from] === undefined) return { value: { ...ok, exitCode: 1, stderr: 'Permission denied' } }
+      files[to] = files[from] ?? ''
+      delete files[from]
+      return { value: ok }
+    }
     if (git === 'throws') throw new Error('git nicht aufrufbar')
     return {
       value:
@@ -92,6 +110,15 @@ function engine(on: On, setup: Setup = {}) {
   })
   // Wie Linux: die Schreibweise zählt
   on('fs.exists', (_, e) => ({ value: files[e.path] !== undefined || unreadable.includes(e.path) || e.path in (setup.dirs ?? {}) }))
+  // Die Dateien direkt unter einem Ordner
+  on('fs.list', (_, e) => {
+    const prefix = `${e.path}/`
+    const names = Object.keys(files)
+      .filter(f => f.startsWith(prefix) && !f.slice(prefix.length).includes('/'))
+      .map(f => ({ name: f.slice(prefix.length), kind: 'file' as const, size: 0, mtimeMs: NOW }))
+    if (names.length === 0) throw new Error(`ENOENT: ${e.path}`)
+    return { value: names }
+  })
   on('fs.stat', (_, e) => {
     const kind = setup.dirs?.[e.path] ?? (files[e.path] === undefined ? undefined : 'file')
     if (kind === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -332,10 +359,10 @@ test('Schalter öffnet und schließt das Pane und merkt es sich', async ($, on) 
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'desktop' })
   await ui.press({ key: 'todo-toggle' })
   expect(isPaneOpen).toBe(true)
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project' })
+  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'project', section: 'todo' })
   await ui.press({ key: 'todo-toggle' })
   expect(isPaneOpen).toBe(false)
-  expect(stored['ui.v1']).toEqual({ isOpen: false, tab: 'project' })
+  expect(stored['ui.v1']).toEqual({ isOpen: false, tab: 'project', section: 'todo' })
   await ui.unmount()
 })
 
@@ -425,7 +452,7 @@ test('Pane: Tabs als Icons mit Zahl, Projekt zuerst gewählt, Umschalten wird ge
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'todo-tab-global' })
   expect(await texts(ui)).toEqual(['Steuer', 'Arzt'])
-  expect(stored['ui.v1']).toEqual({ isOpen: false, tab: 'global' })
+  expect(stored['ui.v1']).toEqual({ isOpen: false, tab: 'global', section: 'todo' })
   await ui.unmount()
 })
 
@@ -636,7 +663,7 @@ test('Befehl /projekt-mappe: öffnet, schließt, springt auf den Tab', async ($,
   expect(isPaneOpen).toBe(false)
   await $.command.run({ command: 'projekt-mappe', args: 'global' } as never)
   expect(isPaneOpen).toBe(true)
-  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'global' })
+  expect(stored['ui.v1']).toEqual({ isOpen: true, tab: 'global', section: 'todo' })
 })
 
 // ---- Werkzeug für Claude -------------------------------------------------------
@@ -740,5 +767,86 @@ test('Werkzeug: ein Anlegen zieht die Zahl am Schalter nach', async ($, on) => {
   const ui = await $.ui.mount({ ...SESSION_MODE, surface: 'terminal' })
   await $.tool.call({ tool: TOOL, action: 'add', text: 'neu' } as never)
   expect((await ui.find({ type: 'Button', key: 'todo-toggle' }))?.props.label).toBe('☑ ToDos 1')
+  await ui.unmount()
+})
+
+// ---- Backlog -------------------------------------------------------------------
+
+const BL = `${REPO}/backlog`
+const ORDNER_TASK = '---\nstatus: offen\nangelegt: 2026-08-24\n---\n\n# Paket ausliefern\n\nText bleibt.\n'
+
+const openBacklog = async ($: Engine) => {
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'section-backlog' })
+  return ui
+}
+
+test('Backlog: Reiter nur im Projekt; Marcos Ordner-Form gruppiert nach Status', async ($, on) => {
+  engine(on, {
+    files: {
+      [`${BL}/tasks/001-paket.md`]: ORDNER_TASK,
+      [`${BL}/tasks/002-ruht.md`]: ORDNER_TASK.replace('status: offen', 'status: ruht').replace('Paket ausliefern', 'Ruhendes'),
+      [`${BL}/completed/000-alt.md`]: ORDNER_TASK.replace('status: offen', 'status: erledigt').replace('Paket ausliefern', 'Altes'),
+    },
+  })
+  await start($)
+  const ui = await openBacklog($)
+  expect((await ui.find({ type: 'Button', key: 'section-backlog' }))?.props.variant).toBe('primary')
+  const shown = await texts(ui)
+  expect(shown.filter(t => /^(Offen|In Arbeit|Erledigt|Archiv) /.test(t))).toEqual(['Offen 1', 'In Arbeit 1', 'Erledigt 1'])
+  expect((await ui.find({ type: 'Button', key: 'task-open-tasks/001-paket.md' }))?.props.label).toBe('Paket ausliefern')
+  // Global gibt es keine Reiter
+  await ui.press({ key: 'todo-tab-global' })
+  expect(await ui.find({ type: 'Button', key: 'section-backlog' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Backlog: erledigen zieht per git mv nach completed/, nur status und erledigt ändern sich', async ($, on) => {
+  engine(on, { files: { [`${BL}/tasks/001-paket.md`]: ORDNER_TASK } })
+  await start($)
+  const ui = await openBacklog($)
+  await ui.press({ key: 'task-toggle-tasks/001-paket.md' })
+  expect(files[`${BL}/tasks/001-paket.md`]).toBeUndefined()
+  expect(files[`${BL}/completed/001-paket.md`]).toBe(ORDNER_TASK.replace('status: offen', 'status: erledigt').replace('2026-08-24\n---', '2026-08-24\nerledigt: 2026-11-02\n---'))
+  expect(runs.some(r => r[0] === 'git' && r[1] === 'mv')).toBe(true)
+  await ui.unmount()
+})
+
+test('Backlog: scheitert das Verschieben, bleibt alles, wie es war, und das Pane meldet es', async ($, on) => {
+  engine(on, { files: { [`${BL}/tasks/001-paket.md`]: ORDNER_TASK }, mvFails: true })
+  await start($)
+  const ui = await openBacklog($)
+  await ui.press({ key: 'task-toggle-tasks/001-paket.md' })
+  expect(files[`${BL}/tasks/001-paket.md`]).toBe(ORDNER_TASK)
+  expect(files[`${BL}/completed/001-paket.md`]).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^⚠/ }))?.text).toContain('Verschieben fehlgeschlagen')
+  await ui.unmount()
+})
+
+test('Backlog: ohne Backlog legt ＋ eines im Format von Backlog.md an, mit config.yml', async ($, on) => {
+  engine(on)
+  await start($)
+  const ui = await openBacklog($)
+  await ui.press({ key: 'task-add' })
+  await ui.input({ key: 'task-new-input', text: 'Release bauen\nVorher testen.', kind: 'submit' })
+  expect(files[`${BL}/config.yml`]).toContain('statuses: ["To Do", "In Progress", "Done"]')
+  const made = files[`${BL}/tasks/task-1 - Release-bauen.md`] ?? ''
+  expect(made).toContain('id: TASK-1\ntitle: Release bauen\nstatus: To Do')
+  expect(made).toContain('<!-- SECTION:DESCRIPTION:BEGIN -->\nVorher testen.\n<!-- SECTION:DESCRIPTION:END -->')
+  // Done bleibt in tasks/, nur der Status wechselt
+  await ui.press({ key: 'task-toggle-tasks/task-1 - Release-bauen.md' })
+  expect(files[`${BL}/tasks/task-1 - Release-bauen.md`]).toContain('status: Done')
+  // Archivieren zieht nach archive/
+  await ui.press({ key: 'task-open-tasks/task-1 - Release-bauen.md' })
+  await ui.press({ key: 'task-archive-tasks/task-1 - Release-bauen.md' })
+  expect(files[`${BL}/archive/task-1 - Release-bauen.md`]).toContain('status: Done')
+  await ui.unmount()
+})
+
+test('Backlog: eine einzelne BACKLOG.md wird nur angezeigt', async ($, on) => {
+  engine(on, { files: { [`${REPO}/BACKLOG.md`]: '# BACKLOG\n\n## Offen\n\n### Etwas\n' } })
+  await start($)
+  const ui = await openBacklog($)
+  expect((await ui.find({ type: 'Markdown', key: 'backlog-single' }))?.props.text).toBe('# BACKLOG\n\n## Offen\n\n### Etwas\n')
   await ui.unmount()
 })

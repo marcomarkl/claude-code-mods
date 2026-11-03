@@ -47,12 +47,52 @@ export type Paths = {
 }
 
 /** Was im Pane gerade bearbeitet wird: ein neuer Eintrag oder ein vorhandener. */
-export type Draft = { kind: 'new'; scope: Scope } | { kind: 'edit'; scope: Scope; id: string }
+export type Draft =
+  | { kind: 'new'; scope: Scope }
+  | { kind: 'edit'; scope: Scope; id: string }
+  /** Neue Backlog-Aufgabe */
+  | { kind: 'task' }
+
+/** Reiter im Projekt. Global gibt es nur die ToDo-Liste. */
+export type Section = 'todo' | 'backlog' | 'changelog' | 'doku'
+
+/** Ordner unter backlog/. */
+export type Folder = 'tasks' | 'completed' | 'archive' | 'drafts'
+/** Backlog.md (github.com/MrLesk/Backlog.md) oder Marcos Ordner-Form (status/angelegt, deutsch). */
+export type Style = 'backlog.md' | 'ordner'
+/** Wohin eine Aufgabe in der Anzeige gehört, unabhängig vom Wortlaut ihres Status. */
+export type Group = 'todo' | 'doing' | 'done' | 'archived'
+
+/** Eine Backlog-Aufgabe, gelesen aus ihrer Datei. */
+export type Task = {
+  /** Pfad relativ zu backlog/, etwa `tasks/task-3 - Titel.md`. */
+  file: string
+  folder: Folder
+  style: Style
+  /** Backlog.md: `TASK-3`; Ordner-Form: der Dateiname ohne `.md`. */
+  id: string
+  title: string
+  status: string
+  group: Group
+  /** Der Körper ohne Frontmatter, zum Anzeigen. */
+  body: string
+}
+
+/** Das Backlog des Projekts, wie zuletzt gelesen. */
+export type BacklogState = {
+  style: Style
+  /** Die Status, die man setzen kann, in ihrer Reihenfolge. */
+  statuses: string[]
+  tasks: Task[]
+  /** Eine einzelne BACKLOG.md ohne backlog/-Ordner: nur zum Anzeigen. */
+  single?: string
+}
 
 /** Über Sitzungen gemerkt ($.store, Schlüssel `ui.v1`). */
 export type UiState = {
   isOpen: boolean
   tab: Scope
+  section?: Section
 }
 
 declare module 'claude-code' {
@@ -63,6 +103,12 @@ declare module 'claude-code' {
       tab: Shaped<Scope>
       draft: Shaped<Draft | null>
       isOpen: Shaped<boolean>
+      section: Shaped<Section>
+      backlog: Shaped<BacklogState | null>
+      /** Datei der aufgeklappten Aufgabe bzw. der geöffneten Doku-Datei */
+      opened: Shaped<string | null>
+      /** Letzte Meldung im Pane, etwa ein gescheitertes Verschieben */
+      notice: Shaped<string | null>
     }
   }
 }

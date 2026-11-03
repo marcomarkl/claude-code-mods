@@ -1,7 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Draft, ListState, Lists, Paths, Scope, TodoItem, UiState } from '../types'
+import type { BacklogState, Draft, ListState, Lists, Paths, Scope, Section, Task, TodoItem, UiState } from '../types'
+import {
+  configYaml,
+  DEFAULT_CONFIG,
+  doneStatus,
+  FOLDERS,
+  newTask,
+  parseConfig,
+  statusChange,
+  statusesOf,
+  styleOf,
+  taskOf,
+} from './backlog'
+import type { Config } from './backlog'
 import {
   addUnit,
   canMove,
@@ -43,6 +56,7 @@ const ICON = {
   down: '↓',
   remove: '✕',
   warn: '⚠',
+  archive: '🗄',
 } as const
 
 // Das Icon allein ist unter dem Eingabefeld zu unauffällig
@@ -53,6 +67,16 @@ const lists = atom({ plugin: 'projekt-mappe', key: 'lists' } as const, null, { s
 const tab = atom({ plugin: 'projekt-mappe', key: 'tab' } as const, 'project', { shape: 'v1' })
 const draft = atom({ plugin: 'projekt-mappe', key: 'draft' } as const, null, { shape: 'v1' })
 const isOpen = atom({ plugin: 'projekt-mappe', key: 'isOpen' } as const, false, { shape: 'v1' })
+const section = atom({ plugin: 'projekt-mappe', key: 'section' } as const, 'todo', { shape: 'v1' })
+const backlog = atom({ plugin: 'projekt-mappe', key: 'backlog' } as const, null, { shape: 'v1' })
+const opened = atom({ plugin: 'projekt-mappe', key: 'opened' } as const, null, { shape: 'v1' })
+const notice = atom({ plugin: 'projekt-mappe', key: 'notice' } as const, null, { shape: 'v1' })
+
+// Die Reiter im Projekt, in dieser Reihenfolge
+const SECTIONS: ReadonlyArray<{ id: Section; label: string }> = [
+  { id: 'todo', label: 'ToDo' },
+  { id: 'backlog', label: 'Backlog' },
+]
 
 // ---- Dateien ---------------------------------------------------------------
 
@@ -241,7 +265,7 @@ async function clearDone($: EngineInterface, scope: Scope): Promise<boolean> {
 // ---- Pane und Zustand --------------------------------------------------------
 
 async function saveUi($: EngineInterface) {
-  const state: UiState = { isOpen: await read($, isOpen), tab: await read($, tab) }
+  const state: UiState = { isOpen: await read($, isOpen), tab: await read($, tab), section: await read($, section) }
   try {
     await $.store.set(UI_KEY, state)
   } catch {
@@ -255,6 +279,7 @@ async function setOpen($: EngineInterface, open: boolean) {
     const placed = await $.ui.open({ id: PANE, title: TOGGLE_LABEL })
     if (!placed.isPlaced) return
     await refresh($)
+    await refreshSection($)
   } else {
     await $.ui.close({ id: PANE })
   }
@@ -276,12 +301,179 @@ async function focusOn($: EngineInterface, key: string) {
 async function setTab($: EngineInterface, scope: Scope) {
   await update($, tab, () => scope)
   await update($, draft, () => null)
+  await update($, opened, () => null)
   await saveUi($)
+  await refreshSection($)
 }
 
 // Offen ist, was weder erledigt noch abgelehnt ist
 const isOpenItem = (i: TodoItem) => !i.done && i.declined !== true
 const openCount = (l: Lists | null, scope: Scope) => (l === null ? 0 : l[scope].items.filter(isOpenItem).length)
+
+// Reiter im Projekt; liest nur, was der gewählte Reiter braucht
+async function setSection($: EngineInterface, next: Section) {
+  await update($, section, () => next)
+  await update($, draft, () => null)
+  await update($, opened, () => null)
+  await update($, notice, () => null)
+  await saveUi($)
+  await refreshSection($)
+}
+
+// Was der offene Reiter zeigt, neu lesen; der Takt ruft das nur bei offenem Pane
+async function refreshSection($: EngineInterface) {
+  if ((await read($, tab)) !== 'project') return
+  const current = await read($, section)
+  if (current === 'backlog') await refreshBacklog($)
+}
+
+// ---- Backlog --------------------------------------------------------------------
+
+const backlogDir = (p: Paths) => `${p.root}/backlog`
+
+// Gelesene Aufgaben je Datei mit ihrer mtime: nur Geänderte werden neu gelesen
+let taskCache = new Map<string, { mtimeMs: number; task: Task }>()
+let cachedRoot = ''
+
+const readText = ($: EngineInterface, path: string) =>
+  $.fs.read(path).then(
+    t => t as string,
+    () => undefined,
+  )
+
+// Datum und Minute in Ortszeit, wie Backlog.md sie schreibt (yyyy-mm-dd hh:mm)
+async function nowParts($: EngineInterface) {
+  const d = new Date(await $.clock.now())
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return { date, minute: `${date} ${pad(d.getHours())}:${pad(d.getMinutes())}` }
+}
+
+async function readConfig($: EngineInterface, p: Paths): Promise<{ config: Config; hasConfig: boolean }> {
+  for (const file of [`${p.root}/backlog.config.yml`, `${backlogDir(p)}/config.yml`]) {
+    const text = await readText($, file)
+    if (text !== undefined) return { config: parseConfig(text), hasConfig: true }
+  }
+  return { config: DEFAULT_CONFIG, hasConfig: false }
+}
+
+async function readBacklog($: EngineInterface): Promise<BacklogState> {
+  const p = await currentPaths($)
+  if (cachedRoot !== p.root) {
+    taskCache = new Map()
+    cachedRoot = p.root
+  }
+  const { config, hasConfig } = await readConfig($, p)
+  const tasks: Task[] = []
+  const seen = new Set<string>()
+  for (const folder of FOLDERS) {
+    const entries = await $.fs.list(`${backlogDir(p)}/${folder}`).catch(() => [])
+    for (const entry of entries) {
+      if (entry.kind !== 'file' || !entry.name.endsWith('.md') || entry.name.toLowerCase() === 'readme.md') continue
+      const file = `${folder}/${entry.name}`
+      seen.add(file)
+      const hit = taskCache.get(file)
+      if (hit !== undefined && entry.mtimeMs !== 0 && hit.mtimeMs === entry.mtimeMs) {
+        tasks.push(hit.task)
+        continue
+      }
+      const raw = await readText($, `${backlogDir(p)}/${file}`)
+      if (raw === undefined) continue
+      const task = taskOf(file, raw, config)
+      taskCache.set(file, { mtimeMs: entry.mtimeMs, task })
+      tasks.push(task)
+    }
+  }
+  for (const file of [...taskCache.keys()]) if (!seen.has(file)) taskCache.delete(file)
+  tasks.sort((a, b) => a.file.localeCompare(b.file, 'de', { numeric: true }))
+  const style = styleOf(tasks, hasConfig)
+  const state: BacklogState = { style, statuses: statusesOf(style, config), tasks }
+  if (tasks.length > 0) return state
+  // Ohne Aufgaben: eine einzelne BACKLOG.md nur anzeigen
+  const single = await readText($, `${p.root}/BACKLOG.md`)
+  return single === undefined ? state : { ...state, single }
+}
+
+async function refreshBacklog($: EngineInterface) {
+  const next = await readBacklog($)
+  if (JSON.stringify(await read($, backlog)) !== JSON.stringify(next)) await update($, backlog, () => next)
+}
+
+// Verschieben: im Git-Repo per git mv, sonst (oder bei einer Datei außerhalb von Git) per mv.
+// Liefert eine Fehlermeldung, wenn es nicht ging; die Datei bleibt dann, wo sie ist.
+async function moveFile($: EngineInterface, p: Paths, from: string, to: string): Promise<string | undefined> {
+  if (await $.fs.exists(to).catch(() => false)) return `Ziel gibt es schon: ${to}`
+  const run = (argv: string[]) => $.process.run(argv, { cwd: p.root, timeoutMs: 10_000 }).catch(() => undefined)
+  await run(['mkdir', '-p', to.slice(0, to.lastIndexOf('/'))])
+  if (p.exclude !== undefined) {
+    const git = await run(['git', 'mv', '--', from, to])
+    if (git?.exitCode === 0) return undefined
+  }
+  const mv = await run(['mv', '--', from, to])
+  return mv?.exitCode === 0 ? undefined : `Verschieben fehlgeschlagen: ${mv?.stderr.trim() || from}`
+}
+
+// Status setzen; Marcos Ordner-Form zieht dabei nach completed/ um. Der neue Status wird erst
+// nach gelungenem Verschieben geschrieben. Liefert eine Fehlermeldung oder undefined.
+async function setTaskStatus($: EngineInterface, file: string, status: string): Promise<string | undefined> {
+  const p = await currentPaths($)
+  const state = await readBacklog($)
+  const task = state.tasks.find(t => t.file === file)
+  if (task === undefined) return `Aufgabe nicht gefunden: ${file}`
+  if (!state.statuses.includes(status)) return `Unbekannter Status: ${status} (erlaubt: ${state.statuses.join(', ')})`
+  const from = `${backlogDir(p)}/${task.file}`
+  const raw = await readText($, from)
+  if (raw === undefined) return `Nicht lesbar: ${from}`
+  const { config } = await readConfig($, p)
+  const changed = statusChange(task, raw, status, config, await nowParts($))
+  let target = from
+  if (changed.moveTo !== undefined) {
+    target = `${backlogDir(p)}/${changed.moveTo}/${task.file.slice(task.file.indexOf('/') + 1)}`
+    const failed = await moveFile($, p, from, target)
+    if (failed !== undefined) {
+      await update($, notice, () => failed)
+      return failed
+    }
+  }
+  await $.fs.write(target, changed.text)
+  await refreshBacklog($)
+  return undefined
+}
+
+// Archivieren gibt es nur bei Backlog.md: die Datei zieht nach archive/, der Status bleibt
+async function archiveTask($: EngineInterface, file: string): Promise<string | undefined> {
+  const p = await currentPaths($)
+  const state = await readBacklog($)
+  const task = state.tasks.find(t => t.file === file)
+  if (task === undefined) return `Aufgabe nicht gefunden: ${file}`
+  if (task.style === 'ordner') return setTaskStatus($, file, 'gegenstandslos')
+  if (task.folder === 'archive') return undefined
+  const failed = await moveFile(
+    $,
+    p,
+    `${backlogDir(p)}/${task.file}`,
+    `${backlogDir(p)}/archive/${task.file.slice(task.file.indexOf('/') + 1)}`,
+  )
+  if (failed !== undefined) await update($, notice, () => failed)
+  await refreshBacklog($)
+  return failed
+}
+
+// Neue Aufgabe in der Form des Projekts; legt ein neues Backlog mit config.yml an
+async function addTask($: EngineInterface, title: string, description: string): Promise<Task | undefined> {
+  const clean = title.replace(/\s+/g, ' ').trim()
+  if (clean === '') return undefined
+  const p = await currentPaths($)
+  const state = await readBacklog($)
+  const { config, hasConfig } = await readConfig($, p)
+  const made = newTask(state.style, state.tasks, config, clean, description, await nowParts($))
+  if (state.style === 'backlog.md' && !hasConfig && state.tasks.length === 0) {
+    await $.fs.write(`${backlogDir(p)}/config.yml`, configYaml(p.root.slice(p.root.lastIndexOf('/') + 1)))
+  }
+  await $.fs.write(`${backlogDir(p)}/${made.file}`, made.text)
+  await refreshBacklog($)
+  return (await read($, backlog))?.tasks.find(t => t.file === made.file)
+}
 
 // ---- Werkzeug für Claude -------------------------------------------------------
 
@@ -420,6 +612,8 @@ export const register: Register = on => {
       await refresh($)
       const saved = (await $.store.get(UI_KEY)) as Partial<UiState> | undefined
       if (saved?.tab === 'global' || saved?.tab === 'project') await update($, tab, () => saved.tab as Scope)
+      const savedSection = SECTIONS.find(x => x.id === saved?.section)?.id
+      if (savedSection !== undefined) await update($, section, () => savedSection)
       if (saved?.isOpen === true) await setOpen($, true)
     } catch {
       // Dann startet die Liste geschlossen
@@ -427,6 +621,10 @@ export const register: Register = on => {
     // Änderungen anderer Sitzungen nachladen
     $.clock.every(REFRESH_MS, () => {
       void refresh($).catch(() => undefined)
+      // Backlog, Changelog und Doku nur, solange das Pane offen ist
+      void read($, isOpen)
+        .then(isShown => (isShown ? refreshSection($) : undefined))
+        .catch(() => undefined)
     })
     return started
   })
@@ -499,46 +697,10 @@ export const register: Register = on => {
       typed = undefined
       focusedEditor = undefined
     }
-    const list = l?.[scope] ?? { items: [] }
-    const isLocked = list.error !== undefined
-    const openItems = list.items.filter(isOpenItem)
-    const doneItems = list.items.filter(i => !isOpenItem(i))
-
-    // Mobil gibt es kein Eingabefeld: dort nur abhaken und löschen
-    if (e.surface === 'mobile') {
-      const { Box, Text, Button, Markdown } = $.ui.resolve(e)
-      return (
-        <Box flexDirection="column" rowGap={1}>
-          <Box flexDirection="row" columnGap={1}>
-            {(['global', 'project'] as const).map(s => (
-              <Button
-                key={`todo-tab-${s}`}
-                label={`${s === 'global' ? ICON.global : ICON.project} ${openCount(l, s)}`}
-                {...(s === scope ? { variant: 'primary' as const } : {})}
-                onPress={() => void setTab($, s)}
-              />
-            ))}
-          </Box>
-          {isLocked ? <Text color="warning">{`${ICON.warn} ${list.error}`}</Text> : null}
-          <Box flexDirection="column">
-            {list.items.map(item => (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                <Button key={`todo-toggle-${item.id}`} plain label={item.done ? ICON.done : ICON.open} onPress={() => void toggleItem($, scope, item.id)} />
-                <Box flexGrow={1} flexShrink={1} {...(item.depth > 0 ? { marginLeft: 2 } : {})}>
-                  <Text dimColor={!isOpenItem(item)} strikethrough={item.done}>
-                    {item.text}
-                  </Text>
-                </Box>
-                <Button key={`todo-remove-${item.id}`} plain dimColor label={ICON.remove} onPress={() => void removeItem($, scope, item.id)} />
-              </Box>
-            ))}
-          </Box>
-          {list.foreign === undefined ? null : <Markdown key="todo-foreign" text={clip(list.foreign)} dimColor />}
-        </Box>
-      )
-    }
-
+    const current: Section = scope === 'project' ? await read($, section) : 'todo'
+    const isMobile = e.surface === 'mobile'
     const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
+
     // Aktionen einer Zeile: ohne Rahmen, gedimmt, unter dem Zeiger voll sichtbar
     const action = (key: string, label: string, onPress: () => void) => (
       <Button key={key} plain dimColor label={label} onPress={onPress} />
@@ -593,50 +755,10 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const row = (item: TodoItem) => {
-      if (editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
-        // Gespeichert hat der Eintrag eine neue id, der Fokus geht auf dessen ✎
-        return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, `todo-edit-${item.id}`, value =>
-          editItem($, scope, item.id, value).then(async newId => {
-            await update($, draft, () => null)
-            return newId === undefined ? undefined : `todo-edit-${newId}`
-          }),
-        )
-      }
-      const canEdit = isOpenItem(item) && !isLocked
-      return (
-        <Box flexDirection="row" alignItems="flex-start" columnGap={1} {...(item.depth > 0 ? { marginLeft: 2 } : {})}>
-          <Button
-            key={`todo-toggle-${item.id}`}
-            plain
-            label={item.done ? ICON.done : ICON.open}
-            onPress={() => void toggleItem($, scope, item.id)}
-          />
-          <Box flexGrow={1} flexShrink={1}>
-            <Text dimColor={!isOpenItem(item)} strikethrough={item.done}>
-              {item.text}
-            </Text>
-          </Box>
-          {canEdit
-            ? action(`todo-edit-${item.id}`, ICON.edit, () => {
-                void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id })).then(() =>
-                  focusOn($, `todo-edit-input-${item.id}`),
-                )
-              })
-            : null}
-          {canEdit && item.canUp === true ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
-          {canEdit && item.canDown === true
-            ? action(`todo-down-${item.id}`, ICON.down, () => void moveItem($, scope, item.id, 1))
-            : null}
-          {isLocked ? null : action(`todo-remove-${item.id}`, ICON.remove, () => void removeItem($, scope, item.id))}
-        </Box>
-      )
-    }
 
-    const adding = editing?.kind === 'new' && editing.scope === scope
-    return (
+    // Kopf: 🌐/📁 links, rechts die Knöpfe des Reiters; darunter im Projekt die Reiter
+    const header = (right: unknown) => (
       <Box flexDirection="column" rowGap={1}>
-        {/* Kopf: Tabs links, Neu und Aufräumen rechts */}
         <Box flexDirection="row" alignItems="center" justifyContent="space-between" columnGap={1}>
           <Box flexDirection="row" columnGap={1}>
             {(['global', 'project'] as const).map(s => (
@@ -648,41 +770,214 @@ export const register: Register = on => {
               />
             ))}
           </Box>
-          <Box flexDirection="row" columnGap={2}>
-            {isLocked || !doneItems.some(i => i.done) ? null : (
-              <Button key="todo-clear" plain dimColor label={ICON.clear} onPress={() => void clearDone($, scope)} />
-            )}
-            {isLocked ? null : (
-              <Button
-                key="todo-add"
-                plain
-                label={ICON.add}
-                onPress={() => {
-                  void update($, draft, (): Draft => ({ kind: 'new', scope })).then(() => focusOn($, 'todo-new-input'))
-                }}
-              />
-            )}
-          </Box>
+          {right as never}
         </Box>
-        {isLocked ? <Text color="warning">{`${ICON.warn} ${list.error}`}</Text> : null}
-        {openItems.length === 0 && !adding ? null : (
-          <Box flexDirection="column">
-            {openItems.map(row)}
-            {adding
-              ? editor('todo-new-input', undefined, 'todo-new-cancel', 'todo-add', value =>
-                  addItem($, scope, value).then(async () => {
-                    await update($, draft, () => null)
-                    return undefined
-                  }),
-                )
-              : null}
+        {scope === 'project' ? (
+          <Box flexDirection="row" columnGap={1}>
+            {SECTIONS.map(x => (
+              <Button
+                key={`section-${x.id}`}
+                plain
+                label={x.label}
+                {...(x.id === current ? { variant: 'primary' as const } : { dimColor: true })}
+                onPress={() => void setSection($, x.id)}
+              />
+            ))}
           </Box>
-        )}
-        {/* Erledigte als eigener Block darunter */}
-        {doneItems.length === 0 ? null : <Box flexDirection="column">{doneItems.map(row)}</Box>}
-        {/* Was nicht zu einem Eintrag gehört (Einleitung, Abschnitte, Fließtext), gerendert */}
-        {list.foreign === undefined ? null : <Markdown key="todo-foreign" text={clip(list.foreign)} dimColor />}
+        ) : null}
       </Box>
     )
+    const warning = (text: string | null | undefined) =>
+      text === null || text === undefined ? null : <Text color="warning">{`${ICON.warn} ${text}`}</Text>
+
+    // ---- Reiter ToDo ----
+    const todoView = () => {
+      const list = l?.[scope] ?? { items: [] }
+      const isLocked = list.error !== undefined
+      const openItems = list.items.filter(isOpenItem)
+      const doneItems = list.items.filter(i => !isOpenItem(i))
+      const adding = !isMobile && editing?.kind === 'new' && editing.scope === scope
+      const row = (item: TodoItem) => {
+        if (!isMobile && editing?.kind === 'edit' && editing.id === item.id && editing.scope === scope) {
+          // Gespeichert hat der Eintrag eine neue id, der Fokus geht auf dessen ✎
+          return editor(`todo-edit-input-${item.id}`, item.text, `todo-edit-cancel-${item.id}`, `todo-edit-${item.id}`, value =>
+            editItem($, scope, item.id, value).then(async newId => {
+              await update($, draft, () => null)
+              return newId === undefined ? undefined : `todo-edit-${newId}`
+            }),
+          )
+        }
+        const canEdit = !isMobile && isOpenItem(item) && !isLocked
+        return (
+          <Box flexDirection="row" alignItems="flex-start" columnGap={1} {...(item.depth > 0 ? { marginLeft: 2 } : {})}>
+            <Button
+              key={`todo-toggle-${item.id}`}
+              plain
+              label={item.done ? ICON.done : ICON.open}
+              onPress={() => void toggleItem($, scope, item.id)}
+            />
+            <Box flexGrow={1} flexShrink={1}>
+              <Text dimColor={!isOpenItem(item)} strikethrough={item.done}>
+                {item.text}
+              </Text>
+            </Box>
+            {canEdit
+              ? action(`todo-edit-${item.id}`, ICON.edit, () => {
+                  void update($, draft, (): Draft => ({ kind: 'edit', scope, id: item.id })).then(() =>
+                    focusOn($, `todo-edit-input-${item.id}`),
+                  )
+                })
+              : null}
+            {canEdit && item.canUp === true ? action(`todo-up-${item.id}`, ICON.up, () => void moveItem($, scope, item.id, -1)) : null}
+            {canEdit && item.canDown === true
+              ? action(`todo-down-${item.id}`, ICON.down, () => void moveItem($, scope, item.id, 1))
+              : null}
+            {isLocked ? null : action(`todo-remove-${item.id}`, ICON.remove, () => void removeItem($, scope, item.id))}
+          </Box>
+        )
+      }
+      const right = (
+        <Box flexDirection="row" columnGap={2}>
+          {isMobile || isLocked || !doneItems.some(i => i.done) ? null : (
+            <Button key="todo-clear" plain dimColor label={ICON.clear} onPress={() => void clearDone($, scope)} />
+          )}
+          {isMobile || isLocked ? null : (
+            <Button
+              key="todo-add"
+              plain
+              label={ICON.add}
+              onPress={() => {
+                void update($, draft, (): Draft => ({ kind: 'new', scope })).then(() => focusOn($, 'todo-new-input'))
+              }}
+            />
+          )}
+        </Box>
+      )
+      return (
+        <Box flexDirection="column" rowGap={1}>
+          {header(right)}
+          {warning(list.error)}
+          {openItems.length === 0 && !adding ? null : (
+            <Box flexDirection="column">
+              {openItems.map(row)}
+              {adding
+                ? editor('todo-new-input', undefined, 'todo-new-cancel', 'todo-add', value =>
+                    addItem($, scope, value).then(async () => {
+                      await update($, draft, () => null)
+                      return undefined
+                    }),
+                  )
+                : null}
+            </Box>
+          )}
+          {/* Erledigte als eigener Block darunter */}
+          {doneItems.length === 0 ? null : <Box flexDirection="column">{doneItems.map(row)}</Box>}
+          {/* Was nicht zu einem Eintrag gehört (Einleitung, Abschnitte, Fließtext), gerendert */}
+          {list.foreign === undefined ? null : <Markdown key="todo-foreign" text={clip(list.foreign)} dimColor />}
+        </Box>
+      )
+    }
+
+    // ---- Reiter Backlog ----
+    const backlogView = async () => {
+      const state = await read($, backlog)
+      const openTask = await read($, opened)
+      const message = await read($, notice)
+      const adding = !isMobile && editing?.kind === 'task'
+      const right = isMobile ? null : (
+        <Button
+          key="task-add"
+          plain
+          label={ICON.add}
+          onPress={() => {
+            void update($, draft, (): Draft => ({ kind: 'task' })).then(() => focusOn($, 'task-new-input'))
+          }}
+        />
+      )
+      const tasks = state?.tasks ?? []
+      const done = state === null ? 'Done' : state.style === 'ordner' ? 'erledigt' : (state.statuses[state.statuses.length - 1] ?? 'Done')
+      const reopen = state === null ? 'To Do' : state.style === 'ordner' ? 'offen' : (state.statuses[0] ?? 'To Do')
+      const taskRow = (task: Task) => {
+        const isDone = task.group === 'done' || task.group === 'archived'
+        const isOpened = openTask === task.file
+        return (
+          <Box flexDirection="column">
+            <Box flexDirection="row" alignItems="flex-start" columnGap={1}>
+              <Button
+                key={`task-toggle-${task.file}`}
+                plain
+                label={isDone ? ICON.done : ICON.open}
+                onPress={() => void setTaskStatus($, task.file, isDone ? reopen : done)}
+              />
+              <Box flexGrow={1} flexShrink={1}>
+                <Button
+                  key={`task-open-${task.file}`}
+                  plain
+                  {...(isDone ? { dimColor: true } : {})}
+                  label={task.style === 'backlog.md' ? `${task.id} ${task.title}` : task.title}
+                  onPress={() => void update($, opened, () => (isOpened ? null : task.file))}
+                />
+              </Box>
+              <Text dimColor>{task.status}</Text>
+            </Box>
+            {isOpened ? (
+              <Box flexDirection="column" rowGap={1} marginLeft={2} marginY={1}>
+                <Box flexDirection="row" columnGap={1}>
+                  {(state?.statuses ?? []).map(s => (
+                    <Button
+                      key={`task-status-${task.file}-${s}`}
+                      plain
+                      label={s}
+                      {...(s === task.status ? { variant: 'primary' as const } : { dimColor: true })}
+                      onPress={() => void setTaskStatus($, task.file, s)}
+                    />
+                  ))}
+                  {task.style === 'backlog.md' && task.folder !== 'archive'
+                    ? action(`task-archive-${task.file}`, ICON.archive, () => void archiveTask($, task.file))
+                    : null}
+                </Box>
+                {task.body === '' ? null : <Markdown key={`task-body-${task.file}`} text={clip(task.body)} />}
+              </Box>
+            ) : null}
+          </Box>
+        )
+      }
+      const group = (id: Task['group'], label: string) => {
+        const inGroup = tasks.filter(t => t.group === id)
+        return inGroup.length === 0 ? null : (
+          <Box flexDirection="column">
+            <Text bold dimColor={id === 'done' || id === 'archived'}>{`${label} ${inGroup.length}`}</Text>
+            {inGroup.map(taskRow)}
+          </Box>
+        )
+      }
+      return (
+        <Box flexDirection="column" rowGap={1}>
+          {header(right)}
+          {warning(message)}
+          {adding
+            ? editor('task-new-input', undefined, 'task-new-cancel', 'task-add', value => {
+                // Erste Zeile Titel, der Rest Beschreibung
+                const [title = '', ...rest] = value.replace(/\r\n?/g, '\n').split('\n')
+                return addTask($, title, rest.join('\n')).then(async () => {
+                  await update($, draft, () => null)
+                  return undefined
+                })
+              })
+            : null}
+          {state?.single !== undefined ? <Markdown key="backlog-single" text={clip(state.single)} /> : null}
+          {tasks.length === 0 && state?.single === undefined && !adding ? (
+            <Text dimColor>Kein Backlog. ＋ legt eines im Format von Backlog.md an.</Text>
+          ) : null}
+          {group('todo', 'Offen')}
+          {group('doing', 'In Arbeit')}
+          {group('done', 'Erledigt')}
+          {group('archived', 'Archiv')}
+        </Box>
+      )
+    }
+
+    if (current === 'backlog') return backlogView()
+    return todoView()
   })
 }
